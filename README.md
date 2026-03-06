@@ -1,82 +1,309 @@
 # FitnessPal
 
-Local-first fitness tracking software for nutrition, training, bodyweight, and agent-driven workflows.
+FitnessPal is a local-first fitness tracking platform for nutrition, training, bodyweight, and agent-assisted workflows.
 
-## Stack
+It is designed for a single user running the stack on a local machine 24/7, with all structured data, uploaded meal photos, exports, and AI integrations kept under local control.
 
-- `api/`: FastAPI backend with modular domain manifests, local auth, API keys, audit logs, idempotent writes, export/restore, and a DB-backed job queue.
-- `web/`: React + TypeScript + Vite frontend with dashboards for nutrition, training, bodyweight, insights, templates, and settings.
-- `worker/`: Background processing runs from `api/app/worker.py` and handles photo analysis, insight recomputation, and scheduled backups.
-- `docker-compose.yml`: isolated `postgres`, `api`, `worker`, and `web` services for always-on local hosting.
+## Table of Contents
 
-## What works now
+- [Overview](#overview)
+- [Current Status](#current-status)
+- [Feature Summary](#feature-summary)
+- [Architecture](#architecture)
+- [Repository Layout](#repository-layout)
+- [Quick Start](#quick-start)
+- [Local AI and Ollama](#local-ai-and-ollama)
+- [OpenClaw Integration](#openclaw-integration)
+- [Development](#development)
+- [Configuration](#configuration)
+- [Operations](#operations)
+- [Testing](#testing)
+- [Known Limitations](#known-limitations)
+- [Roadmap Ideas](#roadmap-ideas)
+- [License](#license)
 
-- Detailed meal logging with quick macros, saved foods, ingredient-based recipes, meal templates, and photo-analysis drafts.
-- Strength and hypertrophy logging with exercises, workout templates, set-by-set sessions, PR detection, and progression recommendations.
-- Weight tracking with 7-day and 30-day smoothing.
-- Insight snapshots that connect calories, weight trend, training volume, and recovery flags.
-- OpenClaw-friendly API manifest at `/.well-known/fitnesspal-agent.json`.
-- Worker/runtime visibility from the Settings page, including local AI config and recent background jobs.
+## Overview
 
-## Local defaults
+FitnessPal combines:
 
-- Username: `owner`
-- Password: `fitnesspal`
+- a FastAPI backend with a modular domain layout
+- a React web app optimized for fast day-to-day phone use
+- a lightweight worker loop for background jobs
+- PostgreSQL for local structured storage
+- local disk storage for uploads and exports
+- optional local AI integration for meal photo analysis
 
-Change these before exposing the stack beyond your trusted local network.
+The project is intentionally local-first:
 
-## Ollama and OpenClaw
+- no cloud auth is required
+- no cloud storage is required
+- no third-party nutrition API is required
+- OpenClaw and local LLM tooling interact through the same documented API surface used by the web app
 
-FitnessPal uses an OpenAI-compatible local vision endpoint for meal photo analysis. The default deployment is configured for:
+## Current Status
+
+FitnessPal is usable today for local production-style testing.
+
+Implemented now:
+
+- nutrition logging with foods, recipes, meal templates, manual macro logging, and meal photo draft analysis
+- training logging with exercises, workout templates, routines, sessions, set-level logging, PR detection, and progression recommendations
+- weight tracking with rolling 7-day and 30-day trends
+- insight snapshots that connect calories, bodyweight, training volume, and recovery flags
+- local auth, API keys, audit logging, export/restore, runtime inspection, and a background job queue
+- a mobile-first web app designed around quick daily logging
+
+Not fully mature yet:
+
+- database schema changes are still managed via SQLAlchemy `create_all()` rather than versioned migrations
+- API key scopes are stored, but route-level scope enforcement is not yet fully wired across the application
+- automated test coverage is still concentrated in logic tests rather than full integration and end-to-end coverage
+- the frontend bundle still needs chunk-splitting work for faster first load on slower phones
+
+## Feature Summary
+
+### Nutrition
+
+- create foods with macro data
+- build recipes from saved foods and gram amounts
+- build reusable meal templates
+- log meals manually with calories, protein, carbs, and fat
+- upload meal photos for AI-assisted draft generation
+- review and confirm meal photo drafts before they become saved meals
+
+### Training
+
+- create exercises with progression defaults
+- define workout templates and routines
+- log workout sessions with set-by-set details
+- mark PRs automatically based on performance
+- generate progression recommendations using recent sets and bodyweight/calorie context
+
+### Body Metrics
+
+- log weight entries
+- optionally include body fat percentage, waist, and notes
+- calculate rolling 7-day and 30-day trend lines
+- expose weight trend per week for use in dashboard and coaching logic
+
+### Platform and Agent Workflows
+
+- local session-cookie auth for the web app
+- bearer API keys for OpenClaw and other trusted local agents
+- machine-readable agent manifest at `/.well-known/fitnesspal-agent.json`
+- export and restore flows for local backups
+- background job inspection from the UI
+- runtime inspection including local AI connectivity and model availability
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Browser["Browser / Phone"] --> Web["web (Nginx + React)"]
+    Web --> API["api (FastAPI)"]
+    API --> DB["PostgreSQL"]
+    API --> Storage["Local storage volume"]
+    Worker["worker (python -m app.worker)"] --> DB
+    Worker --> Storage
+    Worker --> AI["Local AI / Ollama / OpenAI-compatible endpoint"]
+    OpenClaw["OpenClaw agent"] --> API
+```
+
+### Runtime Components
+
+- `web`
+  - serves the React application
+  - proxies `/api/*` and `/.well-known/*` to the backend so the browser can stay on one origin
+- `api`
+  - exposes `/api/v1/*`
+  - serves the OpenAPI document
+  - serves the FitnessPal agent manifest
+  - owns auth, persistence, domain logic, and exports
+- `worker`
+  - runs the background loop from `api/app/worker.py`
+  - claims queued jobs from the database and executes registered handlers
+- `postgres`
+  - persists application data
+- `storage/`
+  - stores uploaded meal photos and generated exports on local disk
+
+## Repository Layout
+
+```text
+FitnessPal/
+|- api/                 FastAPI backend package and tests
+|- infra/               Extra infrastructure config
+|  `- nginx/            Example reverse proxy config
+|- storage/             Local uploads and exports
+|- web/                 React frontend
+|- worker/              Worker documentation
+|- docker-compose.yml   Local multi-service deployment
+`- README.md            Repository overview and operator guide
+```
+
+Additional package-level documentation:
+
+- [`api/README.md`](api/README.md)
+- [`web/README.md`](web/README.md)
+- [`worker/README.md`](worker/README.md)
+
+## Quick Start
+
+### Prerequisites
+
+- Docker Desktop with Compose support
+- optionally, a local Ollama or OpenAI-compatible inference endpoint for meal photo analysis
+
+### 1. Create a local environment file
+
+On Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+On macOS or Linux:
+
+```bash
+cp .env.example .env
+```
+
+### 2. Start the stack
+
+```bash
+docker compose up --build -d
+```
+
+### 3. Open the app
+
+- Web UI: [http://localhost:8080](http://localhost:8080)
+- API root: [http://localhost:8000](http://localhost:8000)
+- Health: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
+- OpenAPI: [http://localhost:8000/api/v1/openapi.json](http://localhost:8000/api/v1/openapi.json)
+- Agent manifest: [http://localhost:8080/.well-known/fitnesspal-agent.json](http://localhost:8080/.well-known/fitnesspal-agent.json)
+
+### 4. Sign in
+
+Default bootstrap credentials:
+
+- username: `owner`
+- password: `fitnesspal`
+
+Change these before exposing the stack anywhere beyond a trusted local machine or LAN.
+
+## Local AI and Ollama
+
+FitnessPal treats meal photo analysis as an optional local service integration.
+
+Expected interface:
+
+- OpenAI-compatible `chat/completions`
+- image-capable model
+- reachable from the `api` and `worker` containers
+
+Default environment values:
 
 - `FITNESSPAL_LOCAL_AI_BASE_URL=http://host.docker.internal:11434/v1`
 - `FITNESSPAL_LOCAL_AI_MODEL=qwen3-vl:8b`
 
-If your Ollama host, path, or model tag differs, override those values in a local `.env` file. If Ollama is on another LAN machine, replace `host.docker.internal` with that reachable host.
+### Recommended Ollama setup
 
-For OpenClaw:
+1. Install or run Ollama on the same machine, or expose it on your LAN.
+2. Pull a vision-capable model.
+3. Point FitnessPal at the Ollama OpenAI-compatible endpoint.
 
-- create an API key from the Settings page
-- point OpenClaw at `http://localhost:8080/.well-known/fitnesspal-agent.json`
-- send writes with `Idempotency-Key` headers so retries stay safe
-
-## Run with Docker
+Example:
 
 ```bash
-copy .env.example .env
-docker compose up --build -d
+ollama pull qwen3-vl:8b
 ```
 
-Services:
+If Ollama runs on another machine, update `.env`:
 
-- Web UI: [http://localhost:8080](http://localhost:8080)
-- API: [http://localhost:8000](http://localhost:8000)
-- Health: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
-- Agent manifest: [http://localhost:8080/.well-known/fitnesspal-agent.json](http://localhost:8080/.well-known/fitnesspal-agent.json)
+```env
+FITNESSPAL_LOCAL_AI_BASE_URL=http://192.168.40.94:11434/v1
+FITNESSPAL_LOCAL_AI_MODEL=qwen3-vl:8b
+```
 
-The web container proxies `/api/*` and `/.well-known/*` to the backend, so the browser can run against one origin.
+If the model is unavailable or the endpoint is unreachable, the meal-photo flow falls back to a safe draft/review workflow instead of silently committing guessed meals.
 
-## Run locally without Docker
+## OpenClaw Integration
 
-Backend:
+FitnessPal is designed to be agent-friendly.
+
+### Agent entry points
+
+- manifest: `/.well-known/fitnesspal-agent.json`
+- OpenAPI schema: `/api/v1/openapi.json`
+- login endpoint: `/api/v1/auth/login`
+- API key issuance: `/api/v1/api-keys`
+
+### Recommended OpenClaw workflow
+
+1. Open the web app.
+2. Go to Settings.
+3. Generate an API key for OpenClaw.
+4. Point OpenClaw at the agent manifest URL.
+5. Use `Idempotency-Key` headers for write requests so retries remain safe.
+
+### Agent-facing resource groups
+
+- `/foods`
+- `/recipes`
+- `/meal-templates`
+- `/meals`
+- `/meal-photos`
+- `/exercises`
+- `/routines`
+- `/workout-templates`
+- `/workout-sessions`
+- `/weight-entries`
+- `/goals`
+- `/insights`
+- `/jobs`
+- `/exports`
+- `/api-keys`
+
+## Development
+
+### Backend
 
 ```bash
 cd api
 python -m venv .venv
-.venv\Scripts\activate
-pip install -e .
+```
+
+Activate the virtual environment.
+
+On Windows PowerShell:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+On macOS or Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies and run the API:
+
+```bash
+pip install -e .[dev]
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Worker:
+### Worker
+
+Run the worker in a second shell:
 
 ```bash
 cd api
-.venv\Scripts\activate
 python -m app.worker
 ```
 
-Frontend:
+### Frontend
 
 ```bash
 cd web
@@ -84,15 +311,120 @@ npm install
 npm run dev
 ```
 
-## Production-testing notes
+### Frontend and backend together without Docker
 
-- The current release is single-user and local-first.
-- Schema setup still uses SQLAlchemy `create_all`, so this is production-testable for a fresh local deployment but not yet a migration-managed multi-upgrade system.
-- API key scopes are stored and exposed, but the default intended workflow is still full-control local keys for trusted agents.
+- run PostgreSQL locally
+- set `FITNESSPAL_DATABASE_URL`
+- start the API
+- start the worker
+- start the Vite dev server
 
-## Verification
+The default frontend dev origin is `http://localhost:5173`, which is already included in the default CORS settings.
 
-- `python -m compileall api/app api/tests`
-- `python -m unittest discover -s api/tests`
-- `npm run build`
-- `docker compose up --build -d`
+## Configuration
+
+The root `.env.example` is the easiest starting point for Docker-based development.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `FITNESSPAL_DATABASE_URL` | SQLAlchemy database URL | `postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal` |
+| `FITNESSPAL_BOOTSTRAP_USERNAME` | initial local user | `owner` |
+| `FITNESSPAL_BOOTSTRAP_PASSWORD` | initial local password | `fitnesspal` |
+| `FITNESSPAL_ALLOW_ORIGINS` | CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080` |
+| `FITNESSPAL_AGENT_MANIFEST_URL` | public manifest URL | `http://localhost:8080/.well-known/fitnesspal-agent.json` |
+| `FITNESSPAL_LOCAL_AI_BASE_URL` | local AI endpoint | `http://host.docker.internal:11434/v1` |
+| `FITNESSPAL_LOCAL_AI_MODEL` | image-capable model name | `qwen3-vl:8b` |
+| `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | AI request timeout | `90` |
+
+Backend-only environment details are documented in [`api/README.md`](api/README.md).
+
+Frontend-only environment details are documented in [`web/README.md`](web/README.md).
+
+## Operations
+
+### Health and runtime inspection
+
+- health: `GET /api/v1/health`
+- runtime info: `GET /api/v1/runtime`
+- job queue: `GET /api/v1/jobs`
+
+### Exports and restore
+
+FitnessPal stores JSON exports under `storage/exports/`.
+
+Available workflows:
+
+- create exports from the Settings page
+- create exports with `POST /api/v1/exports`
+- download exports with `GET /api/v1/exports/{id}/download`
+- restore exports with `POST /api/v1/exports/restore`
+
+### Storage locations
+
+- uploaded meal photos: `storage/uploads/meal-photos/`
+- generated exports: `storage/exports/`
+
+### Logs
+
+Container logs:
+
+```bash
+docker compose logs -f api
+docker compose logs -f worker
+docker compose logs -f web
+```
+
+### Stop the stack
+
+```bash
+docker compose down
+```
+
+## Testing
+
+Backend checks:
+
+```bash
+cd api
+python -m compileall app tests
+python -m unittest discover -s tests
+```
+
+Frontend checks:
+
+```bash
+cd web
+npm run build
+```
+
+Full local stack check:
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+## Known Limitations
+
+- single-user only
+- local-first by design, not a hosted multi-tenant SaaS
+- migrations are not implemented yet
+- API key scopes are stored but not comprehensively enforced at route level yet
+- tests do not yet cover the full integration surface
+- meal photo analysis quality depends entirely on the configured local vision model
+- the frontend bundle still needs code splitting work
+
+## Roadmap Ideas
+
+- Alembic or another migration workflow
+- stronger route-level scope enforcement
+- end-to-end browser tests
+- richer delete, edit, and archive flows
+- progress photo support
+- richer workout analytics and history views
+- generated typed frontend client from OpenAPI
+- chunk-splitting and performance tuning for lower-powered mobile devices
+
+## License
+
+This repository is licensed under the terms of the [LICENSE](LICENSE) file.
