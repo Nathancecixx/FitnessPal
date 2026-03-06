@@ -31,7 +31,7 @@ The frontend focuses on practical tracking:
 - fast workout logging with edit and repeat flows
 - weight check-ins with inline correction
 - template reuse
-- assistant quick capture and runtime/agent settings
+- assistant quick capture, coach briefs, and runtime/AI settings
 - installable PWA basics for phone-first use
 
 The app is intentionally mobile-first, but still works well on larger screens.
@@ -58,7 +58,7 @@ Routes:
 - `/weight` - weigh-ins, inline editing, and bodyweight trends
 - `/templates` - meal and workout template management
 - `/insights` - coaching signals and snapshots
-- `/settings` - runtime inspection, exports, jobs, goals, and scoped API keys
+- `/settings` - runtime inspection, AI backend control, exports, jobs, goals, and scoped API keys
 - `/setup-password` - first-time password setup from an admin-issued link
 
 ## UI Principles
@@ -109,7 +109,6 @@ Examples of the current UX direction:
 The production image serves the built SPA with Nginx and proxies:
 
 - `/api/*` to the FastAPI service
-- `/.well-known/*` to the FastAPI service
 
 This keeps the deployed browser experience on one origin:
 
@@ -123,7 +122,6 @@ The frontend uses a small environment surface.
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `VITE_API_BASE_URL` | API base used by the browser client | `/api/v1` |
-| `VITE_AGENT_MANIFEST_URL` | manifest URL surfaced in the UI | `/.well-known/fitnesspal-agent.json` |
 
 For most Docker usage, the defaults are correct because Nginx proxies requests to the backend.
 

@@ -14,8 +14,9 @@ from app.core.database import get_session
 from app.core.idempotency import IdempotentRoute
 from app.core.logic import rolling_average, weight_trend_per_week
 from app.core.models import Goal, InsightSnapshot, MealEntry, SetEntry, WeightEntry, WorkoutSession, utcnow
+from app.core.local_ai import refresh_coach_brief
 from app.core.modules import ModuleManifest
-from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
+from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import Actor, require_scope
 
 
@@ -32,6 +33,7 @@ def get_insights(actor: Actor = Depends(insights_read), session: Session = Depen
     if not snapshot:
         payload = compute_insight_payload(session, actor.user_id)
         snapshot = persist_snapshot(session, actor.user_id, payload, source="live")
+        refresh_coach_brief(session, actor.user_id, snapshot)
     return {"snapshot": serialize_snapshot(snapshot), "requested_by": actor.display_name}
 
 
@@ -39,6 +41,7 @@ def get_insights(actor: Actor = Depends(insights_read), session: Session = Depen
 def recompute_insights(actor: Actor = Depends(insights_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     payload = compute_insight_payload(session, actor.user_id)
     snapshot = persist_snapshot(session, actor.user_id, payload, source="manual")
+    refresh_coach_brief(session, actor.user_id, snapshot)
     write_audit(session, actor, "insights.recomputed", "insights", snapshot.id, {"source": "manual"})
     return {"snapshot": serialize_snapshot(snapshot)}
 
@@ -183,6 +186,7 @@ def load_dashboard_cards(session: Session, actor: Actor) -> list[DashboardCardSt
 def recompute_job(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
     user_id = str(payload["user_id"])
     snapshot = persist_snapshot(session, user_id, compute_insight_payload(session, user_id), source="job")
+    refresh_coach_brief(session, user_id, snapshot)
     return {"snapshot_id": snapshot.id, "scheduled": payload.get("scheduled", False)}
 
 
@@ -200,14 +204,5 @@ manifest = ModuleManifest(
         )
     ],
     dashboard_loader=load_dashboard_cards,
-    agent_examples=[
-        AgentExample(
-            key="fetch-insights",
-            title="Fetch insights",
-            method="GET",
-            path="/api/v1/insights",
-            summary="Retrieve the latest nutrition, bodyweight, and training recommendations.",
-        )
-    ],
     job_handlers={"insights.recompute": recompute_job},
 )

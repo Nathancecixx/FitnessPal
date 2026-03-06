@@ -1,6 +1,6 @@
 # FitnessPal
 
-FitnessPal is a local-first fitness tracking platform for nutrition, training, bodyweight, and agent-assisted workflows.
+FitnessPal is a local-first fitness tracking platform for nutrition, training, bodyweight, and brandable AI-coach workflows.
 
 It is designed for a small number of trusted users on a local machine or LAN deployment, with all structured data, uploaded meal photos, exports, and AI integrations kept under local control.
 
@@ -12,8 +12,7 @@ It is designed for a small number of trusted users on a local machine or LAN dep
 - [Architecture](#architecture)
 - [Repository Layout](#repository-layout)
 - [Quick Start](#quick-start)
-- [Local AI and Ollama](#local-ai-and-ollama)
-- [OpenClaw Integration](#openclaw-integration)
+- [AI Backends and Coach Persona](#ai-backends-and-coach-persona)
 - [Development](#development)
 - [Configuration](#configuration)
 - [Operations](#operations)
@@ -31,14 +30,14 @@ FitnessPal combines:
 - a lightweight worker loop for background jobs
 - PostgreSQL for local structured storage
 - local disk storage for uploads and exports
-- optional local AI integration for meal photo analysis
+- optional AI backends for meal photos, nutrition-label extraction, quick capture, and coach briefs
 
 The project is intentionally local-first:
 
 - no cloud auth is required
 - no cloud storage is required
 - no third-party nutrition API is required
-- OpenClaw and local LLM tooling interact through the same documented API surface used by the web app
+- admins can point each AI feature at OpenAI, Anthropic, or a local Ollama server from the Settings page
 
 ## Current Status
 
@@ -52,13 +51,15 @@ Implemented now:
 - insight snapshots that connect calories, bodyweight, training volume, and recovery flags
 - local multi-user auth, scoped API keys, audit logging, per-user export/restore, runtime inspection, and a background job queue
 - assistant quick capture for reviewable natural-language drafts before write actions
+- admin-managed AI profiles, per-feature routing, encrypted provider secrets, and a branded coach persona
+- coach briefs that summarize logged meals, training, bodyweight, and goals into a daily assistant feed
 - versioned Alembic migrations with startup schema checks for safer upgrades
 - a mobile-first web app with lazy-loaded routes and installable PWA basics
 
 Not fully mature yet:
 
 - automated coverage is still mostly backend unit and transaction tests rather than end-to-end browser coverage
-- AI parsing and label/photo extraction stay review-first and depend heavily on the configured local model
+- AI parsing and label/photo extraction stay review-first and depend heavily on the configured backend and model
 - barcode import quality depends on external OpenFoodFacts coverage for the scanned product
 
 ## Feature Summary
@@ -91,15 +92,15 @@ Not fully mature yet:
 - calculate rolling 7-day and 30-day trend lines
 - expose weight trend per week for use in dashboard and coaching logic
 
-### Platform and Agent Workflows
+### Platform and Coach Workflows
 
 - local session-cookie auth for the web app
-- bearer API keys for OpenClaw and other trusted local agents, with route scopes and namespace wildcards
-- machine-readable agent manifest at `/.well-known/fitnesspal-agent.json`
+- bearer API keys for trusted local scripts and private clients, with route scopes and namespace wildcards
 - natural-language draft parsing at `POST /api/v1/assistant/parse`
+- coach brief generation at `GET /api/v1/assistant/brief`
 - export and restore flows for local backups
 - background job inspection from the UI
-- runtime inspection including local AI connectivity and model availability
+- runtime inspection including configured AI profiles, feature routing, and persona metadata
 
 ## Architecture
 
@@ -111,20 +112,19 @@ flowchart LR
     API --> Storage["Local storage volume"]
     Worker["worker (python -m app.worker)"] --> DB
     Worker --> Storage
-    Worker --> AI["Local AI / Ollama / OpenAI-compatible endpoint"]
-    OpenClaw["OpenClaw agent"] --> API
+    Worker --> AI["OpenAI / Anthropic / Ollama"]
+    Scripts["Local scripts / clients"] --> API
 ```
 
 ### Runtime Components
 
 - `web`
   - serves the React application
-  - proxies `/api/*` and `/.well-known/*` to the backend so the browser can stay on one origin
+  - proxies `/api/*` to the backend so the browser can stay on one origin
 - `api`
   - exposes `/api/v1/*`
   - serves the OpenAPI document
-  - serves the FitnessPal agent manifest
-  - owns auth, persistence, domain logic, and exports
+  - owns auth, persistence, domain logic, coach configuration, and exports
 - `worker`
   - runs the background loop from `api/app/worker.py`
   - claims queued jobs from the database and executes registered handlers
@@ -186,7 +186,6 @@ docker compose up --build -d
 - API root: [http://localhost:8000](http://localhost:8000)
 - Health: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
 - OpenAPI: [http://localhost:8000/api/v1/openapi.json](http://localhost:8000/api/v1/openapi.json)
-- Agent manifest: [http://localhost:8080/.well-known/fitnesspal-agent.json](http://localhost:8080/.well-known/fitnesspal-agent.json)
 
 ### 4. Sign in
 
@@ -197,26 +196,41 @@ Bootstrap admin credentials come from:
 
 After the admin signs in, additional users can be created from Settings. Each created user receives a one-time password setup link and only sees their own data.
 
-## Local AI and Ollama
+## AI Backends and Coach Persona
 
-FitnessPal treats meal photo analysis as an optional local service integration.
+FitnessPal now treats AI as an admin-managed control plane rather than a fixed environment variable.
 
-Expected interface:
+Admins can configure:
 
-- OpenAI-compatible `chat/completions`
-- image-capable model
-- reachable from the `api` and `worker` containers
+- provider profiles for OpenAI, Anthropic, and Ollama
+- feature routing for `meal_photo_estimation`, `nutrition_label_scan`, `assistant_quick_capture`, and `coach_brief`
+- per-feature model and tuning overrides
+- a brandable coach persona that powers the dashboard and Coach page voice
 
-Default environment values:
+Guided setup lives in Settings and supports advanced JSON overrides when a provider exposes extra knobs.
 
-- `FITNESSPAL_LOCAL_AI_BASE_URL=http://host.docker.internal:11434/v1`
-- `FITNESSPAL_LOCAL_AI_MODEL=qwen3-vl:8b`
+### Secret handling
+
+- `FITNESSPAL_CONFIG_SECRET` is required before saving cloud provider credentials
+- provider API keys are stored encrypted at rest
+- runtime responses redact secrets and only expose status metadata
+
+### Legacy local AI fallback
+
+If no saved AI profile exists yet, FitnessPal can still expose a read-only fallback profile from:
+
+- `FITNESSPAL_LOCAL_AI_BASE_URL`
+- `FITNESSPAL_LOCAL_AI_MODEL`
+- `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS`
+
+This makes upgrades safer while admins move into the new Settings-based AI control flow.
 
 ### Recommended Ollama setup
 
 1. Install or run Ollama on the same machine, or expose it on your LAN.
 2. Pull a vision-capable model.
-3. Point FitnessPal at the Ollama OpenAI-compatible endpoint.
+3. Create an Ollama profile in Settings and point it at the local server.
+4. Bind meal-photo analysis or nutrition-label scanning to that profile.
 
 Example:
 
@@ -224,36 +238,9 @@ Example:
 ollama pull qwen3-vl:8b
 ```
 
-If Ollama runs on another machine, update `.env`:
+If the configured model is unavailable or the endpoint is unreachable, meal-photo analysis and assistant quick capture fall back to safe review-first behavior. Nutrition-label scanning remains explicit and returns a setup error until an AI backend is configured.
 
-```env
-FITNESSPAL_LOCAL_AI_BASE_URL=http://192.168.40.94:11434/v1
-FITNESSPAL_LOCAL_AI_MODEL=qwen3-vl:8b
-```
-
-If the model is unavailable or the endpoint is unreachable, the meal-photo flow falls back to a safe draft/review workflow instead of silently committing guessed meals.
-
-## OpenClaw Integration
-
-FitnessPal is designed to be agent-friendly.
-
-### Agent entry points
-
-- manifest: `/.well-known/fitnesspal-agent.json`
-- OpenAPI schema: `/api/v1/openapi.json`
-- login endpoint: `/api/v1/auth/login`
-- API key issuance: `/api/v1/api-keys`
-
-### Recommended OpenClaw workflow
-
-1. Open the web app.
-2. Go to Settings.
-3. Generate an API key for OpenClaw.
-4. Point OpenClaw at the agent manifest URL.
-5. Use `Idempotency-Key` headers for write requests so retries remain safe.
-6. Prefer narrowly scoped API keys such as `nutrition:*` or `assistant:use,metrics:write` instead of full-control tokens.
-
-### Agent-facing resource groups
+### Useful API groups for local clients
 
 - `/foods`
 - `/recipes`
@@ -341,10 +328,10 @@ The root `.env.example` is the easiest starting point for Docker-based developme
 | `FITNESSPAL_ADMIN_PASSWORD` | bootstrap admin password | `fitnesspal` |
 | `FITNESSPAL_PASSWORD_SETUP_HOURS` | one-time password setup link lifetime | `72` |
 | `FITNESSPAL_ALLOW_ORIGINS` | CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080` |
-| `FITNESSPAL_AGENT_MANIFEST_URL` | public manifest URL | `http://localhost:8080/.well-known/fitnesspal-agent.json` |
-| `FITNESSPAL_LOCAL_AI_BASE_URL` | local AI endpoint | `http://host.docker.internal:11434/v1` |
-| `FITNESSPAL_LOCAL_AI_MODEL` | image-capable model name | `qwen3-vl:8b` |
-| `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | AI request timeout | `90` |
+| `FITNESSPAL_CONFIG_SECRET` | encryption key for stored AI provider secrets | unset |
+| `FITNESSPAL_LOCAL_AI_BASE_URL` | legacy read-only AI fallback base URL | `http://host.docker.internal:11434/v1` |
+| `FITNESSPAL_LOCAL_AI_MODEL` | legacy fallback model name | `qwen3-vl:8b` |
+| `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | legacy fallback timeout | `90` |
 | `FITNESSPAL_BARCODE_LOOKUP_BASE_URL` | barcode product lookup base URL | `https://world.openfoodfacts.org` |
 | `FITNESSPAL_BARCODE_LOOKUP_TIMEOUT_SECONDS` | barcode lookup timeout | `10` |
 | `FITNESSPAL_BARCODE_LOOKUP_USER_AGENT` | outbound barcode lookup user-agent | `FitnessPal/0.1.0` |
@@ -427,9 +414,9 @@ docker compose ps
 - local-first by design, not a hosted multi-tenant SaaS
 - intended for trusted local or LAN users rather than untrusted internet-facing self-signup
 - end-to-end browser coverage is still missing
-- assistant parsing remains a review-and-apply workflow rather than a fully conversational coach loop
+- assistant parsing remains a review-and-apply workflow rather than an autonomous coach loop
 - tests do not yet cover the full integration surface
-- meal photo analysis quality depends entirely on the configured local vision model
+- meal photo analysis quality depends entirely on the configured backend and model
 - barcode imports are only as complete as the upstream product database
 
 ## Roadmap Ideas

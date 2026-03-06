@@ -50,12 +50,11 @@ The worker loop:
 
 The worker is not:
 
-- an OpenClaw instance
 - a separate orchestration product
 - a distributed queue system
 - a general-purpose workflow engine
 
-OpenClaw should interact with FitnessPal through the API and agent manifest, not by replacing or embedding the worker.
+Local scripts and clients should interact with FitnessPal through the API, not by replacing or embedding the worker.
 
 ## Execution Model
 
@@ -81,11 +80,11 @@ Registered today:
 
 - `nutrition.analyze_photo`
   - analyzes an uploaded meal photo
-  - talks to the configured local AI endpoint
+  - talks to the configured AI backend for that feature
   - stores candidate meal items and confidence metadata in a draft
 - `insights.recompute`
   - refreshes the latest insight snapshot
-  - powers dashboard and coaching summaries
+  - powers dashboard metrics and coach-brief generation
 - `platform.backup`
   - creates a JSON export
   - stores the export under local storage and records it in the database

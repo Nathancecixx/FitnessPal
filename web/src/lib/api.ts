@@ -237,6 +237,51 @@ export type ApiKeyRecord = {
   token?: string
 }
 
+export type AiProfile = {
+  id: string
+  name: string
+  provider: string
+  description?: string | null
+  base_url: string
+  default_model?: string | null
+  timeout_seconds: number
+  is_enabled: boolean
+  is_read_only: boolean
+  default_headers_json: Record<string, string>
+  advanced_settings_json: Record<string, unknown>
+  models_json: string[]
+  last_reachable: boolean
+  last_tested_at?: string | null
+  last_error?: string | null
+  source: string
+  has_api_key: boolean
+}
+
+export type AiFeatureBinding = {
+  id: string
+  feature_key: string
+  profile_id?: string | null
+  profile?: AiProfile | null
+  model?: string | null
+  temperature?: number | null
+  top_p?: number | null
+  max_output_tokens?: number | null
+  system_prompt?: string | null
+  request_overrides_json: Record<string, unknown>
+  uses_legacy_fallback: boolean
+  updated_at: string
+}
+
+export type AiPersonaConfig = {
+  id: string
+  config_key: string
+  display_name: string
+  tagline: string
+  system_prompt: string
+  voice_guidelines_json: Record<string, unknown>
+  updated_at: string
+}
+
 export type ManagedUser = {
   id: string
   username: string
@@ -309,17 +354,13 @@ export type RuntimeInfo = {
   storage_root: string
   uploads_root: string
   exports_root: string
-  agent_manifest_url: string
   allow_origins: string[]
-  local_ai: {
-    configured: boolean
-    base_url?: string | null
-    model: string
-    timeout_seconds: number
-    reachable: boolean
-    available_models: string[]
-    selected_model_available: boolean
-    error?: string | null
+  ai: {
+    profiles: AiProfile[]
+    features: AiFeatureBinding[]
+    persona: AiPersonaConfig
+    legacy_mode: boolean
+    configured_feature_count: number
   }
   jobs: {
     queued: number
@@ -373,6 +414,24 @@ export type AssistantDraftResponse = {
   warnings: string[]
   provider?: string
   model_name?: string
+}
+
+export type AssistantBrief = {
+  id: string
+  status: string
+  source: string
+  provider?: string | null
+  model_name?: string | null
+  title: string
+  summary: string
+  body_markdown?: string | null
+  actions: string[]
+  stats: Record<string, string | number>
+  error_message?: string | null
+  persona_name: string
+  persona_tagline: string
+  created_at: string
+  updated_at: string
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
@@ -434,6 +493,17 @@ export const api = {
   getDashboard: () => request<{ cards: DashboardCard[]; available_modules: string[] }>('/dashboard'),
   getRuntime: () => request<RuntimeInfo>('/runtime'),
   listJobs: (status?: string) => request<{ items: JobRecord[]; total: number }>(`/jobs${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  listAiProfiles: () => request<{ items: AiProfile[]; features: string[] }>('/ai/profiles'),
+  createAiProfile: (payload: Record<string, unknown>) => request<AiProfile>('/ai/profiles', { method: 'POST', body: JSON.stringify(payload) }),
+  getAiProfile: (profileId: string) => request<{ profile: AiProfile }>(`/ai/profiles/${profileId}`),
+  updateAiProfile: (profileId: string, payload: Record<string, unknown>) => request<AiProfile>(`/ai/profiles/${profileId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteAiProfile: (profileId: string) => request<{ status: string; id: string }>(`/ai/profiles/${profileId}`, { method: 'DELETE' }),
+  testAiProfile: (profileId: string) => request<{ profile_id: string; reachable: boolean; available_models: string[]; selected_model_available: boolean; error?: string | null }>(`/ai/profiles/${profileId}/test`, { method: 'POST' }),
+  refreshAiProfileModels: (profileId: string) => request<AiProfile>(`/ai/profiles/${profileId}/models/refresh`, { method: 'POST' }),
+  listAiFeatures: () => request<{ items: AiFeatureBinding[]; features: string[] }>('/ai/features'),
+  updateAiFeatures: (items: Record<string, unknown>[]) => request<{ items: AiFeatureBinding[] }>('/ai/features', { method: 'PUT', body: JSON.stringify({ items }) }),
+  getAiPersona: () => request<{ persona: AiPersonaConfig }>('/ai/persona'),
+  updateAiPersona: (payload: Record<string, unknown>) => request<{ persona: AiPersonaConfig }>('/ai/persona', { method: 'PUT', body: JSON.stringify(payload) }),
   listFoods: (search?: string) => request<{ items: FoodItem[]; total: number }>(`/foods${search ? `?search=${encodeURIComponent(search)}` : ''}`),
   createFood: (payload: Partial<FoodItem> & { name: string }) => request<FoodItem>('/foods', { method: 'POST', body: JSON.stringify(payload) }),
   lookupBarcode: (barcode: string) => request<FoodImportDraft>(`/foods/barcode-lookup/${encodeURIComponent(barcode)}`),
@@ -490,5 +560,6 @@ export const api = {
     body: JSON.stringify({ payload }),
   }),
   parseAssistantNote: (note: string) => request<AssistantDraftResponse>('/assistant/parse', { method: 'POST', body: JSON.stringify({ note }) }),
-  getAgentManifestUrl: () => (import.meta.env.VITE_AGENT_MANIFEST_URL ?? '/.well-known/fitnesspal-agent.json'),
+  getAssistantBrief: () => request<{ brief: AssistantBrief }>('/assistant/brief'),
+  refreshAssistantBrief: () => request<{ brief: AssistantBrief }>('/assistant/brief/refresh', { method: 'POST' }),
 }

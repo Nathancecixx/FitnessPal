@@ -137,6 +137,52 @@ class JobRecord(OwnedMixin, TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class AiProfile(TimestampMixin, Base):
+    __tablename__ = "ai_profiles"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_url: Mapped[str] = mapped_column(String(512))
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_model: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_read_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_headers_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    advanced_settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    models_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    last_reachable: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AiFeatureBinding(TimestampMixin, Base):
+    __tablename__ = "ai_feature_bindings"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    feature_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    profile_id: Mapped[str | None] = mapped_column(ForeignKey("ai_profiles.id"), nullable=True, index=True)
+    model: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    top_p: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_overrides_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class AiPersonaConfig(TimestampMixin, Base):
+    __tablename__ = "ai_persona_configs"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    config_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    tagline: Mapped[str] = mapped_column(String(255))
+    system_prompt: Mapped[str] = mapped_column(Text)
+    voice_guidelines_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
 class Goal(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "goals"
 
@@ -395,3 +441,20 @@ class InsightSnapshot(OwnedMixin, TimestampMixin, Base):
     snapshot_date: Mapped[date] = mapped_column(Date, default=lambda: utcnow().date(), index=True)
     source: Mapped[str] = mapped_column(String(64), default="manual")
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class CoachBrief(OwnedMixin, TimestampMixin, Base):
+    __tablename__ = "coach_briefs"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    insight_snapshot_id: Mapped[str | None] = mapped_column(ForeignKey("insight_snapshots.id"), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="ready", index=True)
+    source: Mapped[str] = mapped_column(String(32), default="deterministic")
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    summary: Mapped[str] = mapped_column(Text)
+    body_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actions_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    stats_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -14,10 +14,10 @@ from app.core.audit import write_audit
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.idempotency import IdempotentRoute
-from app.core.local_ai import inspect_local_ai, parse_natural_language_entry
+from app.core.local_ai import inspect_ai_runtime, parse_natural_language_entry
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
-from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
+from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import (
     Actor,
     authenticate_user,
@@ -146,12 +146,13 @@ def build_auth_payload(user: AppUser, session_token: str) -> dict[str, Any]:
 
 
 @router.get("/health")
-def healthcheck() -> dict[str, Any]:
+def healthcheck(session: Session = Depends(get_session)) -> dict[str, Any]:
+    ai_runtime = inspect_ai_runtime(session)
     return {
         "status": "ok",
         "service": settings.app_name,
         "storage_root": str(settings.storage_root),
-        "local_ai_configured": bool(settings.local_ai_base_url),
+        "ai_configured_features": ai_runtime["configured_feature_count"],
     }
 
 
@@ -297,25 +298,14 @@ def get_runtime(actor: Actor = Depends(platform_read), session: Session = Depend
     latest_export = session.scalars(
         select(ExportRecord).where(ExportRecord.user_id == actor.user_id).order_by(ExportRecord.created_at.desc()).limit(1)
     ).first()
-    local_ai_status = inspect_local_ai()
     return {
         "app_name": settings.app_name,
         "api_prefix": settings.api_prefix,
         "storage_root": str(settings.storage_root),
         "uploads_root": str(settings.upload_root / actor.user_id),
         "exports_root": str(settings.export_root / actor.user_id),
-        "agent_manifest_url": settings.agent_manifest_url,
         "allow_origins": list(settings.allow_origins),
-        "local_ai": {
-            "configured": bool(settings.local_ai_base_url),
-            "base_url": settings.local_ai_base_url,
-            "model": settings.local_ai_model,
-            "timeout_seconds": settings.local_ai_timeout_seconds,
-            "reachable": local_ai_status["reachable"],
-            "available_models": local_ai_status["available_models"],
-            "selected_model_available": local_ai_status["selected_model_available"],
-            "error": local_ai_status["error"],
-        },
+        "ai": inspect_ai_runtime(session),
         "jobs": {
             "queued": session.scalar(
                 select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "queued")
@@ -489,7 +479,7 @@ def parse_assistant_note(
     actor: Actor = Depends(assistant_use),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    parsed = parse_natural_language_entry(payload.note)
+    parsed = parse_natural_language_entry(session, payload.note)
     write_audit(session, actor, "assistant.parsed", "assistant", None, {"draft_count": len(parsed.get("drafts", []))})
     return parsed
 
@@ -590,38 +580,5 @@ manifest = ModuleManifest(
         )
     ],
     dashboard_loader=load_dashboard_cards,
-    agent_examples=[
-        AgentExample(
-            key="create-goal",
-            title="Create calorie goal",
-            method="POST",
-            path="/api/v1/goals",
-            summary="Create a tracked goal for weight, calories, or macros.",
-            request_body={
-                "category": "nutrition",
-                "title": "Daily calories",
-                "metric_key": "calories",
-                "target_value": 2800,
-                "unit": "kcal",
-                "period": "daily",
-            },
-        ),
-        AgentExample(
-            key="create-api-key",
-            title="Issue agent key",
-            method="POST",
-            path="/api/v1/api-keys",
-            summary="Create a scoped API key for OpenClaw or local automations.",
-            request_body={"name": "openclaw", "scopes": ["platform:*", "nutrition:*", "training:*", "metrics:*", "insights:*", "assistant:use"]},
-        ),
-        AgentExample(
-            key="assistant-parse",
-            title="Draft from natural language",
-            method="POST",
-            path="/api/v1/assistant/parse",
-            summary="Turn a free-form fitness note into reviewable meal, weight, or workout drafts.",
-            request_body={"note": "Weighed 82.4 kg this morning and ate lunch for 650 kcal with 45P 60C 20F"},
-        ),
-    ],
     job_handlers={"platform.backup": backup_job},
 )

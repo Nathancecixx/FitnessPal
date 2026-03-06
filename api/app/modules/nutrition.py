@@ -20,7 +20,7 @@ from app.core.logic import MacroProfile, aggregate_macros, recipe_per_serving, s
 from app.core.models import FoodItem, MealEntry, MealEntryItem, MealTemplate, MealTemplateItem, PhotoAnalysisDraft, Recipe, RecipeItem, utcnow
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
-from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
+from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import Actor, require_scope
 from app.core.storage import save_upload
 
@@ -158,7 +158,7 @@ def scan_food_label(
 ) -> dict[str, Any]:
     target = save_upload(file, actor.user_id, subdir="label-photos")
     try:
-        result = analyze_nutrition_label(target)
+        result = analyze_nutrition_label(session, target)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -804,7 +804,7 @@ def analyze_photo_job(session: Session, payload: dict[str, Any]) -> dict[str, An
         draft.status = "processing"
         draft.error_message = None
         session.commit()
-        result = analyze_meal_photo(Path(draft.source_path))
+        result = analyze_meal_photo(session, Path(draft.source_path))
         draft.status = "ready"
         draft.provider = str(result.get("provider"))
         draft.model_name = str(result.get("model_name"))
@@ -849,35 +849,5 @@ manifest = ModuleManifest(
         )
     ],
     dashboard_loader=load_dashboard_cards,
-    agent_examples=[
-        AgentExample(
-            key="create-food",
-            title="Create food item",
-            method="POST",
-            path="/api/v1/foods",
-            summary="Store a reusable local ingredient with per-100g macros.",
-            request_body={
-                "name": "Chicken breast",
-                "calories": 165,
-                "protein_g": 31,
-                "carbs_g": 0,
-                "fat_g": 3.6,
-            },
-        ),
-        AgentExample(
-            key="create-meal",
-            title="Log meal",
-            method="POST",
-            path="/api/v1/meals",
-            summary="Create a meal from manual macros, foods, recipes, or templates.",
-            request_body={
-                "meal_type": "lunch",
-                "items": [
-                    {"food_id": "food_ulid_here", "label": "Chicken breast", "grams": 200, "source_type": "food"},
-                    {"label": "Rice", "calories": 260, "protein_g": 5.4, "carbs_g": 57, "fat_g": 0.6},
-                ],
-            },
-        ),
-    ],
     job_handlers={"nutrition.analyze_photo": analyze_photo_job},
 )

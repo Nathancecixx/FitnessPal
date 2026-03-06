@@ -31,29 +31,10 @@ class DashboardCardState(DashboardCardDefinition):
     status: str = "neutral"
 
 
-class AgentExample(BaseModel):
-    key: str
-    title: str
-    method: str
-    path: str
-    summary: str
-    request_body: dict[str, Any] | None = None
-
-
 class DomainEvent(BaseModel):
     key: str
     emitted_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentManifest(BaseModel):
-    name: str
-    version: str
-    base_url: str
-    auth: dict[str, Any]
-    capabilities: list[str]
-    resources: list[dict[str, Any]]
-    examples: list[AgentExample]
 
 
 T = TypeVar("T")

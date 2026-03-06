@@ -16,7 +16,7 @@ from app.core.logic import ProgressionContext, SetPerformance, recommend_progres
 from app.core.models import Exercise, InsightSnapshot, Routine, RoutineExercise, SetEntry, WorkoutSession, WorkoutTemplate, WorkoutTemplateExercise, utcnow
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
-from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
+from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import Actor, require_scope
 
 
@@ -553,34 +553,4 @@ manifest = ModuleManifest(
         )
     ],
     dashboard_loader=load_dashboard_cards,
-    agent_examples=[
-        AgentExample(
-            key="create-exercise",
-            title="Create exercise",
-            method="POST",
-            path="/api/v1/exercises",
-            summary="Store a new exercise with progression defaults.",
-            request_body={
-                "name": "Barbell bench press",
-                "category": "strength",
-                "rep_target_min": 6,
-                "rep_target_max": 10,
-                "load_increment": 2.5,
-            },
-        ),
-        AgentExample(
-            key="log-workout",
-            title="Log workout",
-            method="POST",
-            path="/api/v1/workout-sessions",
-            summary="Record a workout session with set-by-set detail.",
-            request_body={
-                "notes": "Push day",
-                "sets": [
-                    {"exercise_id": "exercise_ulid", "set_index": 1, "reps": 8, "load_kg": 100, "rir": 2},
-                    {"exercise_id": "exercise_ulid", "set_index": 2, "reps": 8, "load_kg": 100, "rir": 1},
-                ],
-            },
-        ),
-    ],
 )

@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_session, init_db, session_scope
-from app.core.schemas import AgentManifest, DashboardCardState
+from app.core.local_ai import ensure_ai_defaults
+from app.core.schemas import DashboardCardState
 from app.core.security import Actor, ensure_admin_user, get_actor
 from app.core.storage import ensure_storage_dirs
 from app.modules import load_manifests
@@ -25,6 +26,7 @@ async def lifespan(_: FastAPI):
     init_db()
     with session_scope() as session:
         ensure_admin_user(session)
+        ensure_ai_defaults(session)
     yield
 
 
@@ -67,32 +69,7 @@ def root() -> dict[str, Any]:
         "name": settings.app_name,
         "version": "0.1.0",
         "api": settings.api_prefix,
-        "agent_manifest": settings.agent_manifest_url,
     }
-
-
-@app.get("/.well-known/fitnesspal-agent.json", response_model=AgentManifest)
-def agent_manifest() -> AgentManifest:
-    resources = []
-    examples = []
-    for manifest in manifests:
-        routes = []
-        for route in manifest.router.routes:
-            methods = sorted(method for method in getattr(route, "methods", []) if method != "HEAD")
-            if not methods:
-                continue
-            routes.append({"path": f"{settings.api_prefix}{route.path}", "methods": methods})
-        resources.append({"module": manifest.key, "routes": routes})
-        examples.extend(manifest.agent_examples)
-    return AgentManifest(
-        name=settings.app_name,
-        version="0.1.0",
-        base_url=settings.agent_manifest_url.rsplit("/.well-known", 1)[0],
-        auth={"type": "bearer_api_key", "login": f"{settings.api_prefix}/auth/login"},
-        capabilities=["nutrition", "training", "weight", "insights", "exports", "assistant"],
-        resources=resources,
-        examples=examples,
-    )
 
 
 app.include_router(api_router)

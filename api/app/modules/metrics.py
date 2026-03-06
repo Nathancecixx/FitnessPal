@@ -16,7 +16,7 @@ from app.core.logic import rolling_average, weight_trend_per_week
 from app.core.models import WeightEntry, utcnow
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
-from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
+from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import Actor, require_scope
 
 
@@ -201,14 +201,4 @@ manifest = ModuleManifest(
         )
     ],
     dashboard_loader=load_dashboard_cards,
-    agent_examples=[
-        AgentExample(
-            key="log-weight",
-            title="Log weight",
-            method="POST",
-            path="/api/v1/weight-entries",
-            summary="Log a weigh-in with optional body-fat or waist measurement.",
-            request_body={"weight_kg": 82.4, "body_fat_pct": 15.8, "waist_cm": 84.2},
-        )
-    ],
 )

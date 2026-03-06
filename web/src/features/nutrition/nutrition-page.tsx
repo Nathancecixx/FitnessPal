@@ -632,7 +632,7 @@ export function NutritionPage() {
                 <div className="mt-1 text-sm text-slate-500">Use a barcode or nutrition-label photo to prefill the food draft.</div>
                 <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <LabelledInput label="Barcode" value={barcodeDraft} onChange={setBarcodeDraft} placeholder="0123456789012" />
-                  <ActionButton onClick={() => importBarcode.mutate()} className="sm:self-end">{importBarcode.isPending ? 'Looking up…' : 'Lookup barcode'}</ActionButton>
+                  <ActionButton onClick={() => importBarcode.mutate()} className="sm:self-end">{importBarcode.isPending ? 'Looking up...' : 'Lookup barcode'}</ActionButton>
                 </div>
                 <div className="mt-3">
                   <label className="inline-flex cursor-pointer items-center justify-center rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 ring-1 ring-slate-200">

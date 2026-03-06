@@ -12,6 +12,7 @@ class Settings:
     api_prefix: str
     database_url: str
     sql_echo: bool
+    config_secret: str | None
     admin_username: str
     admin_password: str
     session_days: int
@@ -26,7 +27,6 @@ class Settings:
     barcode_lookup_timeout_seconds: int
     barcode_lookup_user_agent: str
     allow_origins: tuple[str, ...]
-    agent_manifest_url: str
 
 
 def _split_csv(value: str | None) -> tuple[str, ...]:
@@ -48,6 +48,7 @@ def get_settings() -> Settings:
             "postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal",
         ),
         sql_echo=os.getenv("FITNESSPAL_SQL_ECHO", "false").lower() == "true",
+        config_secret=os.getenv("FITNESSPAL_CONFIG_SECRET"),
         admin_username=os.getenv("FITNESSPAL_ADMIN_USERNAME", os.getenv("FITNESSPAL_BOOTSTRAP_USERNAME", "owner")),
         admin_password=os.getenv("FITNESSPAL_ADMIN_PASSWORD", os.getenv("FITNESSPAL_BOOTSTRAP_PASSWORD", "fitnesspal")),
         session_days=int(os.getenv("FITNESSPAL_SESSION_DAYS", "30")),
@@ -62,8 +63,4 @@ def get_settings() -> Settings:
         barcode_lookup_timeout_seconds=int(os.getenv("FITNESSPAL_BARCODE_LOOKUP_TIMEOUT_SECONDS", "10")),
         barcode_lookup_user_agent=os.getenv("FITNESSPAL_BARCODE_LOOKUP_USER_AGENT", "FitnessPal/0.1.0"),
         allow_origins=_split_csv(os.getenv("FITNESSPAL_ALLOW_ORIGINS")),
-        agent_manifest_url=os.getenv(
-            "FITNESSPAL_AGENT_MANIFEST_URL",
-            "http://localhost:8080/.well-known/fitnesspal-agent.json",
-        ),
     )

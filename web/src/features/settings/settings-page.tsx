@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { ActionButton, DataList, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api, type UserSetupResponse } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
+import { AiAdminPanel } from './ai-admin-panel'
 
 const apiKeyPresets = [
   { label: 'Assistant (Recommended)', value: 'assistant', scopes: ['assistant:use', 'nutrition:*', 'training:*', 'metrics:*', 'insights:*', 'platform:read'] },
@@ -44,7 +45,7 @@ export function SettingsPage() {
   })
 
   const [goalDraft, setGoalDraft] = useState({ category: 'nutrition', title: 'Daily calories', metric_key: 'calories', target_value: '2800', unit: 'kcal', period: 'daily' })
-  const [apiKeyName, setApiKeyName] = useState('openclaw')
+  const [apiKeyName, setApiKeyName] = useState('fitnesspal-client')
   const [apiKeyPreset, setApiKeyPreset] = useState<(typeof apiKeyPresets)[number]['value']>('assistant')
   const [lastToken, setLastToken] = useState('')
   const [restoreText, setRestoreText] = useState('')
@@ -155,22 +156,23 @@ export function SettingsPage() {
     <div className="space-y-4">
       <PageIntro
         eyebrow="Settings"
-        title="Accounts, agent access, and local operations"
-        description="Manage admin-created users, issue API keys for trusted clients, inspect runtime and jobs, and export or restore only the signed-in user’s data."
+        title="Accounts, coach control, and local operations"
+        description="Manage admin-created users, configure AI backends, issue API keys for trusted local clients, inspect runtime and jobs, and export or restore only the signed-in user data."
       />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_380px]">
         <div className="space-y-4">
           <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Active runtime" subtitle="Current server, worker, and AI-facing configuration for this user context.">
+            <Panel title="Active runtime" subtitle="Current server, worker, and coach configuration for this user context.">
               {runtimeQuery.data ? (
                 <DataList rows={[
                   { label: 'App', value: runtimeQuery.data.app_name },
                   { label: 'Uploads root', value: runtimeQuery.data.uploads_root },
                   { label: 'Exports root', value: runtimeQuery.data.exports_root },
-                  { label: 'Local AI', value: runtimeQuery.data.local_ai.configured ? runtimeQuery.data.local_ai.model : 'Not configured' },
-                  { label: 'AI reachable', value: runtimeQuery.data.local_ai.reachable ? 'Yes' : 'No' },
-                  { label: 'Model available', value: runtimeQuery.data.local_ai.selected_model_available ? 'Yes' : 'No' },
+                  { label: 'AI profiles', value: runtimeQuery.data.ai.profiles.length },
+                  { label: 'Configured features', value: runtimeQuery.data.ai.configured_feature_count },
+                  { label: 'Legacy fallback', value: runtimeQuery.data.ai.legacy_mode ? 'Yes' : 'No' },
+                  { label: 'Coach persona', value: runtimeQuery.data.ai.persona.display_name },
                   { label: 'Queued jobs', value: runtimeQuery.data.jobs.queued },
                   { label: 'Running jobs', value: runtimeQuery.data.jobs.running },
                   { label: 'Failed jobs', value: runtimeQuery.data.jobs.failed },
@@ -178,7 +180,6 @@ export function SettingsPage() {
               ) : (
                 <EmptyState title="Runtime unavailable" body="The web app could not fetch server runtime details." />
               )}
-              {runtimeQuery.data?.local_ai.error ? <div className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{runtimeQuery.data.local_ai.error}</div> : null}
             </Panel>
 
             <Panel title="Password" subtitle="Change the password for the current signed-in account.">
@@ -234,7 +235,7 @@ export function SettingsPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="font-semibold text-slate-950">{user.username}</div>
-                          <div className="mt-1 text-slate-500">{user.is_admin ? 'Admin' : 'User'} · {user.has_password ? 'Password set' : 'Pending setup'}</div>
+                          <div className="mt-1 text-slate-500">{user.is_admin ? 'Admin' : 'User'} - {user.has_password ? 'Password set' : 'Pending setup'}</div>
                           <div className="mt-1 text-xs text-slate-400">Created {new Date(user.created_at).toLocaleString()}</div>
                         </div>
                         <ActionButton tone="secondary" onClick={() => issueSetup.mutate(user.id)} className="w-auto">Issue link</ActionButton>
@@ -247,10 +248,11 @@ export function SettingsPage() {
             </Panel>
           ) : null}
 
-          <Panel title="Exports and restore" subtitle="Create local backups and restore JSON payloads into the current signed-in user’s data scope.">
+          {isAdmin ? <AiAdminPanel /> : null}
+
+          <Panel title="Exports and restore" subtitle="Create local backups and restore JSON payloads into the current signed-in user data scope.">
             <div className="flex flex-wrap gap-3">
               <ActionButton onClick={() => createExport.mutate()}>Create export</ActionButton>
-              <a className="inline-flex items-center justify-center rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-900" href={api.getAgentManifestUrl()} target="_blank" rel="noreferrer">Open agent manifest</a>
             </div>
             <div className="mt-4 space-y-3">
               {(exportsQuery.data?.items ?? []).map((record) => (
@@ -290,7 +292,7 @@ export function SettingsPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="font-semibold text-slate-950">{job.job_type}</div>
-                      <div className="mt-1 text-slate-500">{job.status} · attempt {job.attempts}/{job.max_attempts}</div>
+                      <div className="mt-1 text-slate-500">{job.status} - attempt {job.attempts}/{job.max_attempts}</div>
                     </div>
                     <div className="text-xs uppercase tracking-[0.15em] text-slate-400">{new Date(job.created_at).toLocaleString()}</div>
                   </div>
@@ -303,7 +305,7 @@ export function SettingsPage() {
         </div>
 
         <div className="space-y-4">
-          <Panel title="OpenClaw API key" subtitle="Issue a scoped local token for agents or future clients.">
+          <Panel title="Integration API keys" subtitle="Issue scoped local tokens for private scripts, automations, and trusted clients.">
             <LabelledInput label="Key name" value={apiKeyName} onChange={setApiKeyName} />
             <div className="mt-3">
               <LabelledSelect
@@ -340,7 +342,6 @@ export function SettingsPage() {
                 { label: 'Role', value: sessionQuery.data.user?.is_admin ? 'Admin' : 'User' },
                 { label: 'Scopes', value: sessionQuery.data.actor.scopes.join(', ') },
                 { label: 'API base', value: runtimeQuery.data?.api_prefix ?? '/api/v1' },
-                { label: 'Agent manifest', value: api.getAgentManifestUrl() },
               ]} />
             ) : (
               <EmptyState title="Not signed in" body="Use the login screen to establish a local session before managing the system." />

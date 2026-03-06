@@ -9,10 +9,10 @@ It owns:
 - database access
 - modular domain routing
 - dashboard aggregation
-- local AI integration
+- admin-managed AI integration and coach briefs
 - exports and restore
 - background job definitions
-- agent-facing manifests and examples
+- assistant-facing routes and background flows
 
 ## Table of Contents
 
@@ -38,12 +38,12 @@ Each domain registers a `ModuleManifest` that can contribute:
 - a FastAPI router
 - dashboard card definitions
 - a dashboard loader
-- agent examples
 - job handlers
 
 Current loaded manifests:
 
 - `platform`
+- `ai`
 - `nutrition`
 - `training`
 - `metrics`
@@ -55,7 +55,6 @@ It also serves:
 
 - root metadata at `/`
 - OpenAPI at `/api/v1/openapi.json`
-- FitnessPal agent manifest at `/.well-known/fitnesspal-agent.json`
 
 ## Tech Stack
 
@@ -134,7 +133,6 @@ The module system lives in `app/core/modules.py`.
 - `router`
 - `dashboard_cards`
 - `dashboard_loader`
-- `agent_examples`
 - `job_handlers`
 
 This keeps the backend extensible without scattering domain registration logic across the app entrypoint.
@@ -155,6 +153,8 @@ This keeps the backend extensible without scattering domain registration logic a
 - `GET /metrics`
 - `GET /runtime`
 - `GET /jobs`
+- `GET /assistant/brief`
+- `POST /assistant/brief/refresh`
 - `GET /goals`
 - `POST /goals`
 - `DELETE /goals/{goal_id}`
@@ -166,6 +166,20 @@ This keeps the backend extensible without scattering domain registration logic a
 - `POST /exports`
 - `GET /exports/{export_id}/download`
 - `POST /exports/restore`
+
+### AI routes
+
+- `GET /ai/profiles`
+- `POST /ai/profiles`
+- `GET /ai/profiles/{profile_id}`
+- `PATCH /ai/profiles/{profile_id}`
+- `DELETE /ai/profiles/{profile_id}`
+- `POST /ai/profiles/{profile_id}/test`
+- `POST /ai/profiles/{profile_id}/models/refresh`
+- `GET /ai/features`
+- `PUT /ai/features`
+- `GET /ai/persona`
+- `PUT /ai/persona`
 
 ### Nutrition routes
 
@@ -221,11 +235,10 @@ This keeps the backend extensible without scattering domain registration logic a
 - `GET /insights`
 - `POST /insights/recompute`
 
-### Aggregate and manifest routes
+### Aggregate routes
 
 - `GET /api/v1/dashboard`
 - `GET /api/v1/openapi.json`
-- `GET /.well-known/fitnesspal-agent.json`
 
 ## Authentication
 
@@ -241,7 +254,7 @@ Used by the web app.
 
 ### Bearer API key auth
 
-Used by OpenClaw and other local agents.
+Used by trusted local scripts, private clients, and automation.
 
 - create keys with `POST /api/v1/api-keys`
 - pass `Authorization: Bearer <token>`
@@ -313,18 +326,19 @@ Environment variables supported by the backend:
 | `FITNESSPAL_SESSION_DAYS` | session duration | `30` |
 | `FITNESSPAL_STORAGE_ROOT` | local storage root | `storage` |
 | `FITNESSPAL_ALLOW_ORIGINS` | CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173` plus deployment overrides |
-| `FITNESSPAL_LOCAL_AI_BASE_URL` | local AI endpoint | unset unless configured |
-| `FITNESSPAL_LOCAL_AI_MODEL` | local AI model name | `qwen3-vl:8b` |
-| `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | AI timeout | `60` in app defaults, `90` in Docker env examples |
+| `FITNESSPAL_CONFIG_SECRET` | encryption key for stored AI provider secrets | unset |
+| `FITNESSPAL_LOCAL_AI_BASE_URL` | legacy read-only AI fallback endpoint | unset unless configured |
+| `FITNESSPAL_LOCAL_AI_MODEL` | legacy fallback model name | `qwen3-vl:8b` |
+| `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | legacy fallback timeout | `60` in app defaults, `90` in Docker env examples |
 | `FITNESSPAL_BARCODE_LOOKUP_BASE_URL` | barcode lookup base URL | `https://world.openfoodfacts.org` |
 | `FITNESSPAL_BARCODE_LOOKUP_TIMEOUT_SECONDS` | barcode lookup timeout | `10` |
 | `FITNESSPAL_BARCODE_LOOKUP_USER_AGENT` | outbound barcode lookup user-agent | `FitnessPal/0.1.0` |
-| `FITNESSPAL_AGENT_MANIFEST_URL` | full agent manifest URL | `http://localhost:8080/.well-known/fitnesspal-agent.json` |
 
 Notes:
 
 - in Docker, storage is mounted to `/srv/storage`
 - in local development, storage defaults to a repo-local `storage/` directory unless overridden
+- no saved AI provider secret can be written until `FITNESSPAL_CONFIG_SECRET` is present
 
 ## Running the API
 
@@ -375,5 +389,5 @@ Current test coverage includes core nutrition math, progression logic, transacti
 ## Current Caveats
 
 - route coverage is still limited compared with the full API surface
-- AI parsing and OCR workflows are still intentionally review-first
+- AI parsing, coach briefs, and OCR workflows are intentionally review-first
 - this backend is designed for trusted local or LAN users, not an untrusted internet-facing self-signup deployment
