@@ -1,23 +1,38 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import ReactECharts from 'echarts-for-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
-import { ActionButton, EmptyState, LabelledInput, PageIntro, Panel } from '../../components/ui'
+import { ActionButton, DataList, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
+
+function describeWeeklyTrend(value: number) {
+  if (value >= 0.35) return 'Gaining quickly'
+  if (value >= 0.1) return 'Slow lean gain'
+  if (value <= -0.35) return 'Dropping quickly'
+  if (value <= -0.1) return 'Slow cut'
+  return 'Holding fairly steady'
+}
 
 export function WeightPage() {
   const entriesQuery = useQuery({ queryKey: ['weight-entries'], queryFn: api.listWeightEntries })
   const trendsQuery = useQuery({ queryKey: ['weight-trends'], queryFn: api.getWeightTrends })
-  const [draft, setDraft] = useState({ weight_kg: '82.4', body_fat_pct: '15.8', waist_cm: '84.2' })
+  const [draft, setDraft] = useState({
+    weight_kg: '',
+    body_fat_pct: '',
+    waist_cm: '',
+    notes: '',
+  })
 
   const createEntry = useMutation({
     mutationFn: () => api.createWeightEntry({
       weight_kg: Number(draft.weight_kg),
-      body_fat_pct: Number(draft.body_fat_pct),
-      waist_cm: Number(draft.waist_cm),
+      body_fat_pct: draft.body_fat_pct ? Number(draft.body_fat_pct) : undefined,
+      waist_cm: draft.waist_cm ? Number(draft.waist_cm) : undefined,
+      notes: draft.notes || undefined,
     }),
     onSuccess: async () => {
+      setDraft({ weight_kg: '', body_fat_pct: '', waist_cm: '', notes: '' })
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
         queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
@@ -27,62 +42,186 @@ export function WeightPage() {
     },
   })
 
+  const entries = entriesQuery.data?.items ?? []
   const points = trendsQuery.data?.points ?? []
+  const latestEntry = entries[0]
+  const latestTrendPoint = points.length ? points[points.length - 1] : undefined
+
+  const summaryRows = useMemo(() => [
+    { label: 'Latest weight', value: latestEntry ? `${latestEntry.weight_kg} kg` : 'No entry yet' },
+    { label: '7-day average', value: latestTrendPoint ? `${latestTrendPoint.trend_7.toFixed(1)} kg` : 'Waiting for trend data' },
+    { label: '30-day average', value: latestTrendPoint ? `${latestTrendPoint.trend_30.toFixed(1)} kg` : 'Waiting for trend data' },
+    {
+      label: 'Weekly rate',
+      value: `${trendsQuery.data?.weight_trend_kg_per_week?.toFixed(2) ?? '0.00'} kg/week`,
+    },
+  ], [latestEntry, latestTrendPoint, trendsQuery.data?.weight_trend_kg_per_week])
 
   return (
     <div className="space-y-4">
       <PageIntro
         eyebrow="Body Metrics"
-        title="Weigh-ins with less noise"
-        description="Daily scale weight matters more when the app smooths it. Track raw weigh-ins, 7-day averages, and longer trend lines so calories and training decisions stay tied to signal, not water swings."
+        title="Make the weigh-in a 20 second habit"
+        description="Capture scale weight fast on your phone, tuck optional measurements behind one tap, and let the trend view smooth out the noisy days before it affects your nutrition or training decisions."
       />
 
-      <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <Panel title="Log weigh-in" subtitle="One quick input, plus optional body-fat and waist measurements.">
-          <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); createEntry.mutate() }}>
-            <LabelledInput label="Weight (kg)" type="number" step="0.1" value={draft.weight_kg} onChange={(value) => setDraft((current) => ({ ...current, weight_kg: value }))} />
-            <LabelledInput label="Body fat %" type="number" step="0.1" value={draft.body_fat_pct} onChange={(value) => setDraft((current) => ({ ...current, body_fat_pct: value }))} />
-            <LabelledInput label="Waist (cm)" type="number" step="0.1" value={draft.waist_cm} onChange={(value) => setDraft((current) => ({ ...current, waist_cm: value }))} />
-            <ActionButton type="submit">Save weigh-in</ActionButton>
-          </form>
-          <div className="mt-6 rounded-[24px] bg-slate-100 p-4">
-            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Weekly trend</div>
-            <div className="mt-2 font-display text-3xl">{trendsQuery.data?.weight_trend_kg_per_week?.toFixed(2) ?? '0.00'} kg/week</div>
-          </div>
-        </Panel>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(320px,1.05fr)]">
+        <div className="space-y-4">
+          <Panel title="Morning weigh-in" subtitle="Weight first. Everything else is optional.">
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault()
+                createEntry.mutate()
+              }}
+            >
+              <LabelledInput
+                label="Weight (kg)"
+                type="number"
+                step="0.1"
+                value={draft.weight_kg}
+                onChange={(value) => setDraft((current) => ({ ...current, weight_kg: value }))}
+                placeholder="82.4"
+              />
+
+              <div className="grid gap-3 grid-cols-2">
+                <div className="rounded-[22px] bg-slate-50 p-4 ring-1 ring-slate-200">
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Latest</div>
+                  <div className="mt-2 font-display text-3xl text-slate-950">{latestEntry ? `${latestEntry.weight_kg}` : '--'}</div>
+                  <div className="mt-1 text-sm text-slate-500">kg</div>
+                </div>
+                <div className="rounded-[22px] bg-slate-950 p-4 text-canvas">
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Weekly trend</div>
+                  <div className="mt-2 font-display text-3xl">{trendsQuery.data?.weight_trend_kg_per_week?.toFixed(2) ?? '0.00'}</div>
+                  <div className="mt-1 text-sm text-slate-300">kg per week</div>
+                </div>
+              </div>
+
+              <ActionButton type="submit" className="w-full sm:w-auto">Save weigh-in</ActionButton>
+
+              <details className="rounded-[22px] border border-slate-200 bg-white">
+                <summary className="cursor-pointer list-none px-4 py-4">
+                  <div className="font-semibold text-slate-950">Optional body measurements</div>
+                  <div className="mt-1 text-sm text-slate-500">Use this when you want extra context, not every day.</div>
+                </summary>
+                <div className="border-t border-slate-200 px-4 py-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <LabelledInput
+                      label="Body fat %"
+                      type="number"
+                      step="0.1"
+                      value={draft.body_fat_pct}
+                      onChange={(value) => setDraft((current) => ({ ...current, body_fat_pct: value }))}
+                    />
+                    <LabelledInput
+                      label="Waist (cm)"
+                      type="number"
+                      step="0.1"
+                      value={draft.waist_cm}
+                      onChange={(value) => setDraft((current) => ({ ...current, waist_cm: value }))}
+                    />
+                  </div>
+                  <div className="mt-3">
+                    <LabelledTextArea
+                      label="Notes"
+                      value={draft.notes}
+                      onChange={(value) => setDraft((current) => ({ ...current, notes: value }))}
+                      rows={3}
+                      placeholder="Travel day, heavy refeed, poor sleep, etc."
+                    />
+                  </div>
+                </div>
+              </details>
+            </form>
+          </Panel>
+
+          <Panel title="Recent check-ins" subtitle="The last few entries stay close so the habit feels grounded in actual history.">
+            <div className="space-y-3">
+              {entries.slice(0, 6).map((entry) => (
+                <div key={entry.id} className="rounded-[22px] border border-slate-200 bg-white p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">{new Date(entry.logged_at).toLocaleDateString()}</div>
+                      <div className="mt-2 font-display text-3xl text-slate-950">{entry.weight_kg} kg</div>
+                    </div>
+                    <div className="rounded-full bg-slate-100 px-3 py-2 text-sm text-slate-700">
+                      {entry.body_fat_pct != null ? `${entry.body_fat_pct}% BF` : 'Scale only'}
+                    </div>
+                  </div>
+                  {entry.waist_cm != null ? <div className="mt-3 text-sm text-slate-500">Waist: {entry.waist_cm} cm</div> : null}
+                  {entry.notes ? <div className="mt-2 text-sm text-slate-500">{entry.notes}</div> : null}
+                </div>
+              ))}
+              {!entries.length ? <EmptyState title="No weigh-ins yet" body="Log the first morning weight and the trend cards will start to become useful almost immediately." /> : null}
+            </div>
+          </Panel>
+        </div>
 
         <div className="space-y-4">
-          <Panel title="Trend view" subtitle="Raw weight plus 7-day and 30-day smoothing.">
+          <Panel title="Trend view" subtitle="Use the smoothed lines to make decisions instead of reacting to every spike.">
             {points.length ? (
               <ReactECharts
-                style={{ height: 340 }}
+                style={{ height: 300 }}
                 option={{
                   animationDuration: 700,
                   tooltip: { trigger: 'axis' },
+                  grid: { left: 24, right: 18, top: 28, bottom: 24 },
                   legend: { textStyle: { color: '#475569' } },
-                  xAxis: { type: 'category', data: points.map((point) => new Date(point.logged_at).toLocaleDateString()) },
-                  yAxis: { type: 'value' },
+                  xAxis: {
+                    type: 'category',
+                    data: points.map((point) => new Date(point.logged_at).toLocaleDateString()),
+                    axisLabel: { color: '#64748b' },
+                  },
+                  yAxis: {
+                    type: 'value',
+                    axisLabel: { color: '#64748b' },
+                    splitLine: { lineStyle: { color: '#e2e8f0' } },
+                  },
                   series: [
-                    { name: 'Weight', type: 'line', smooth: true, data: points.map((point) => point.weight_kg), lineStyle: { color: '#fb7185' } },
-                    { name: '7-day', type: 'line', smooth: true, data: points.map((point) => point.trend_7), lineStyle: { color: '#0ea5e9' } },
-                    { name: '30-day', type: 'line', smooth: true, data: points.map((point) => point.trend_30), lineStyle: { color: '#84cc16' } },
+                    {
+                      name: 'Weight',
+                      type: 'line',
+                      smooth: true,
+                      data: points.map((point) => point.weight_kg),
+                      lineStyle: { color: '#fb7185', width: 2 },
+                      symbol: 'circle',
+                      symbolSize: 6,
+                    },
+                    {
+                      name: '7-day',
+                      type: 'line',
+                      smooth: true,
+                      data: points.map((point) => point.trend_7),
+                      lineStyle: { color: '#0ea5e9', width: 2 },
+                      symbol: 'none',
+                    },
+                    {
+                      name: '30-day',
+                      type: 'line',
+                      smooth: true,
+                      data: points.map((point) => point.trend_30),
+                      lineStyle: { color: '#84cc16', width: 2 },
+                      symbol: 'none',
+                    },
                   ],
                 }}
               />
             ) : (
-              <EmptyState title="No trend data yet" body="Add a few weigh-ins and the smoothing lines will start to tell a more useful story than the raw scale alone." />
+              <EmptyState title="No trend data yet" body="A few consecutive weigh-ins are enough for the chart to become much more useful than the raw scale alone." />
             )}
           </Panel>
 
-          <Panel title="Recent weigh-ins" subtitle="Latest entries exactly as logged.">
-            <div className="grid gap-3 md:grid-cols-2">
-              {(entriesQuery.data?.items ?? []).slice(0, 6).map((entry) => (
-                <div key={entry.id} className="rounded-[24px] bg-white px-4 py-4 ring-1 ring-slate-200">
-                  <div className="text-xs uppercase tracking-[0.2em] text-slate-500">{new Date(entry.logged_at).toLocaleDateString()}</div>
-                  <div className="mt-2 font-display text-3xl text-slate-950">{entry.weight_kg} kg</div>
-                  <div className="mt-2 text-sm text-slate-500">{entry.body_fat_pct ? `${entry.body_fat_pct}% body fat` : 'Body fat omitted'}</div>
-                </div>
-              ))}
+          <Panel title="What the trend says" subtitle="A quick reading for calories, recovery, and expectations.">
+            <div className="space-y-4">
+              <div className="rounded-[24px] bg-amber-50 p-4 text-sm text-amber-950">
+                <div className="text-xs uppercase tracking-[0.2em] text-amber-700">Current read</div>
+                <div className="mt-2 font-display text-2xl">{describeWeeklyTrend(trendsQuery.data?.weight_trend_kg_per_week ?? 0)}</div>
+                <p className="mt-2 leading-6">
+                  Weekly change is {trendsQuery.data?.weight_trend_kg_per_week?.toFixed(2) ?? '0.00'} kg/week. Use that as the input for calorie adjustments, not one noisy weigh-in.
+                </p>
+              </div>
+
+              <DataList rows={summaryRows} />
             </div>
           </Panel>
         </div>

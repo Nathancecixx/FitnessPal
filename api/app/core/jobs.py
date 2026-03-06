@@ -42,6 +42,7 @@ def claim_next_job(session: Session) -> JobRecord | None:
         select(JobRecord)
         .where(JobRecord.status == "queued", JobRecord.available_at <= now)
         .order_by(JobRecord.available_at.asc(), JobRecord.created_at.asc())
+        .with_for_update(skip_locked=True)
         .limit(1)
     )
     if not record:

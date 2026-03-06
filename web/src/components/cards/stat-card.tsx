@@ -12,9 +12,9 @@ export function StatCard({ card }: { card: DashboardCard }) {
   }[card.accent] ?? 'from-slate-300 via-slate-100 to-white'
 
   return (
-    <div className={`rounded-[28px] border border-slate-200 bg-gradient-to-br ${accent} p-5 text-slate-950 shadow-halo`}>
+    <div className={`rounded-[24px] border border-slate-200 bg-gradient-to-br ${accent} p-4 text-slate-950 shadow-halo md:rounded-[28px] md:p-5`}>
       <div className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{card.title}</div>
-      <div className="mt-6 font-display text-4xl">{card.value ?? '...'}</div>
+      <div className="mt-5 font-display text-3xl md:text-4xl">{card.value ?? '...'}</div>
       <p className="mt-3 text-sm text-slate-700">{card.detail ?? card.description}</p>
     </div>
   )
@@ -22,10 +22,10 @@ export function StatCard({ card }: { card: DashboardCard }) {
 
 export function TinyLineChart(props: { title: string; points: number[]; color: string }) {
   return (
-    <div className="rounded-[28px] border border-slate-200 bg-white/85 p-5 shadow-halo">
+    <div className="rounded-[24px] border border-slate-200 bg-white/88 p-4 shadow-halo md:rounded-[28px] md:p-5">
       <div className="font-display text-lg text-slate-950">{props.title}</div>
       <ReactECharts
-        style={{ height: 180 }}
+        style={{ height: 160 }}
         option={{
           animationDuration: 600,
           grid: { top: 20, right: 8, bottom: 20, left: 20 },

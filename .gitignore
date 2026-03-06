@@ -2,6 +2,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.env
+*.env
+!.env.example
 node_modules/
 dist/
 web/dist/

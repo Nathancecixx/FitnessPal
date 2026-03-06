@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -14,6 +14,7 @@ from app.core.audit import write_audit
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.idempotency import IdempotentRoute
+from app.core.local_ai import inspect_local_ai
 from app.core.modules import ModuleManifest
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
 from app.core.security import (
@@ -134,9 +135,57 @@ def metrics(actor: Actor = Depends(get_actor), session: Session = Depends(get_se
         "workouts": session.scalar(select(func.count(WorkoutSession.id))) or 0,
         "weight_entries": session.scalar(select(func.count(WeightEntry.id))) or 0,
         "queued_jobs": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "queued")) or 0,
+        "running_jobs": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "running")) or 0,
+        "failed_jobs": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "failed")) or 0,
         "generated_at": utcnow().isoformat(),
         "requested_by": actor.display_name,
     }
+
+
+@router.get("/runtime")
+def get_runtime(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+    latest_export = session.scalars(select(ExportRecord).order_by(ExportRecord.created_at.desc()).limit(1)).first()
+    local_ai_status = inspect_local_ai()
+    return {
+        "app_name": settings.app_name,
+        "api_prefix": settings.api_prefix,
+        "storage_root": str(settings.storage_root),
+        "uploads_root": str(settings.upload_root),
+        "exports_root": str(settings.export_root),
+        "agent_manifest_url": settings.agent_manifest_url,
+        "allow_origins": list(settings.allow_origins),
+        "local_ai": {
+            "configured": bool(settings.local_ai_base_url),
+            "base_url": settings.local_ai_base_url,
+            "model": settings.local_ai_model,
+            "timeout_seconds": settings.local_ai_timeout_seconds,
+            "reachable": local_ai_status["reachable"],
+            "available_models": local_ai_status["available_models"],
+            "selected_model_available": local_ai_status["selected_model_available"],
+            "error": local_ai_status["error"],
+        },
+        "jobs": {
+            "queued": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "queued")) or 0,
+            "running": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "running")) or 0,
+            "failed": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "failed")) or 0,
+        },
+        "last_export_at": latest_export.created_at.isoformat() if latest_export else None,
+        "requested_by": actor.display_name,
+    }
+
+
+@router.get("/jobs")
+def list_jobs(
+    actor: Actor = Depends(get_actor),
+    session: Session = Depends(get_session),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=200),
+) -> dict[str, Any]:
+    query = select(JobRecord).order_by(JobRecord.created_at.desc()).limit(limit)
+    if status:
+        query = select(JobRecord).where(JobRecord.status == status).order_by(JobRecord.created_at.desc()).limit(limit)
+    rows = session.scalars(query).all()
+    return {"items": [serialize_job(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
 
 
 @router.get("/goals")
@@ -290,8 +339,27 @@ def serialize_export(record: ExportRecord) -> dict[str, Any]:
     }
 
 
+def serialize_job(record: JobRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "job_type": record.job_type,
+        "status": record.status,
+        "payload": record.payload_json,
+        "result": record.result_json,
+        "dedupe_key": record.dedupe_key,
+        "attempts": record.attempts,
+        "max_attempts": record.max_attempts,
+        "available_at": record.available_at.isoformat(),
+        "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
+        "finished_at": record.finished_at.isoformat() if record.finished_at else None,
+        "last_error": record.last_error,
+        "created_at": record.created_at.isoformat(),
+    }
+
+
 def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
     latest_export = session.scalars(select(ExportRecord).order_by(ExportRecord.created_at.desc()).limit(1)).first()
+    queued_jobs = session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "queued")) or 0
     return [
         DashboardCardState(
             key="system-health",
@@ -300,7 +368,7 @@ def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
             description="API, storage, and backup status.",
             accent="emerald",
             value="Healthy",
-            detail=f"Last backup: {latest_export.created_at.strftime('%Y-%m-%d %H:%M') if latest_export else 'Never'}",
+            detail=f"Last backup: {latest_export.created_at.strftime('%Y-%m-%d %H:%M') if latest_export else 'Never'} · {queued_jobs} queued jobs",
             status="positive",
         )
     ]

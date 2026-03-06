@@ -4,11 +4,22 @@
 
 :root {
   color-scheme: light;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+html,
 body {
   margin: 0;
   min-width: 320px;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(252, 211, 77, 0.35), transparent 26%),
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.22), transparent 24%),
+    linear-gradient(180deg, #fff8ef 0%, #f8fafc 38%, #eef2ff 100%);
+}
+
+#root {
+  min-height: 100vh;
 }
 
 * {
@@ -20,6 +31,16 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+
+button {
+  touch-action: manipulation;
 }
 
 ::-webkit-scrollbar {

@@ -1,7 +1,15 @@
 # FitnessPal Worker
 
-The worker service runs `python -m app.worker` from the API image and processes background jobs such as:
+The deployed worker code lives in [api/app/worker.py](C:/Users/natha/OneDrive/Documents/Projects/FitnessPal/api/app/worker.py).
 
-- photo meal analysis
-- insight recomputation
-- nightly JSON backups
+The `worker/` folder is documentation-only. The running worker container reuses the API image and executes:
+
+```bash
+python -m app.worker
+```
+
+Current job handlers:
+
+- `nutrition.analyze_photo`
+- `insights.recompute`
+- `platform.backup`

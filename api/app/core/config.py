@@ -51,11 +51,11 @@ def get_settings() -> Settings:
         upload_root=upload_root,
         export_root=export_root,
         local_ai_base_url=os.getenv("FITNESSPAL_LOCAL_AI_BASE_URL"),
-        local_ai_model=os.getenv("FITNESSPAL_LOCAL_AI_MODEL", "llava"),
+        local_ai_model=os.getenv("FITNESSPAL_LOCAL_AI_MODEL", "qwen3-vl:8b"),
         local_ai_timeout_seconds=int(os.getenv("FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS", "60")),
         allow_origins=_split_csv(os.getenv("FITNESSPAL_ALLOW_ORIGINS")),
         agent_manifest_url=os.getenv(
             "FITNESSPAL_AGENT_MANIFEST_URL",
-            "http://localhost:8000/.well-known/fitnesspal-agent.json",
+            "http://localhost:8080/.well-known/fitnesspal-agent.json",
         ),
     )

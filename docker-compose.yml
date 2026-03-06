@@ -19,10 +19,15 @@ services:
     build:
       context: ./api
     environment:
-      FITNESSPAL_DATABASE_URL: postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal
+      FITNESSPAL_DATABASE_URL: ${FITNESSPAL_DATABASE_URL:-postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal}
       FITNESSPAL_STORAGE_ROOT: /srv/storage
-      FITNESSPAL_ALLOW_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080
-      FITNESSPAL_AGENT_MANIFEST_URL: http://localhost:8000/.well-known/fitnesspal-agent.json
+      FITNESSPAL_BOOTSTRAP_USERNAME: ${FITNESSPAL_BOOTSTRAP_USERNAME:-owner}
+      FITNESSPAL_BOOTSTRAP_PASSWORD: ${FITNESSPAL_BOOTSTRAP_PASSWORD:-fitnesspal}
+      FITNESSPAL_ALLOW_ORIGINS: ${FITNESSPAL_ALLOW_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
+      FITNESSPAL_AGENT_MANIFEST_URL: ${FITNESSPAL_AGENT_MANIFEST_URL:-http://localhost:8080/.well-known/fitnesspal-agent.json}
+      FITNESSPAL_LOCAL_AI_BASE_URL: ${FITNESSPAL_LOCAL_AI_BASE_URL:-http://host.docker.internal:11434/v1}
+      FITNESSPAL_LOCAL_AI_MODEL: ${FITNESSPAL_LOCAL_AI_MODEL:-qwen3-vl:8b}
+      FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS: ${FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS:-90}
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,10 +46,15 @@ services:
       context: ./api
     command: ["python", "-m", "app.worker"]
     environment:
-      FITNESSPAL_DATABASE_URL: postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal
+      FITNESSPAL_DATABASE_URL: ${FITNESSPAL_DATABASE_URL:-postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal}
       FITNESSPAL_STORAGE_ROOT: /srv/storage
-      FITNESSPAL_ALLOW_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080
-      FITNESSPAL_AGENT_MANIFEST_URL: http://localhost:8000/.well-known/fitnesspal-agent.json
+      FITNESSPAL_BOOTSTRAP_USERNAME: ${FITNESSPAL_BOOTSTRAP_USERNAME:-owner}
+      FITNESSPAL_BOOTSTRAP_PASSWORD: ${FITNESSPAL_BOOTSTRAP_PASSWORD:-fitnesspal}
+      FITNESSPAL_ALLOW_ORIGINS: ${FITNESSPAL_ALLOW_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
+      FITNESSPAL_AGENT_MANIFEST_URL: ${FITNESSPAL_AGENT_MANIFEST_URL:-http://localhost:8080/.well-known/fitnesspal-agent.json}
+      FITNESSPAL_LOCAL_AI_BASE_URL: ${FITNESSPAL_LOCAL_AI_BASE_URL:-http://host.docker.internal:11434/v1}
+      FITNESSPAL_LOCAL_AI_MODEL: ${FITNESSPAL_LOCAL_AI_MODEL:-qwen3-vl:8b}
+      FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS: ${FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS:-90}
     depends_on:
       api:
         condition: service_healthy

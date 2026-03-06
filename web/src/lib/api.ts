@@ -33,6 +33,24 @@ export type FoodItem = {
   tags_json: string[]
 }
 
+export type Recipe = {
+  id: string
+  name: string
+  servings: number
+  instructions_json: string[]
+  notes?: string | null
+  tags_json: string[]
+  items: Array<{
+    id: string
+    food_id: string
+    food_name: string
+    grams: number
+    macros: MacroTotals
+  }>
+  per_serving: MacroTotals
+  created_at: string
+}
+
 export type MealEntryItem = {
   id?: string
   food_id?: string | null
@@ -217,16 +235,61 @@ export type ExportRecord = {
   finished_at?: string | null
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
+export type JobRecord = {
+  id: string
+  job_type: string
+  status: string
+  payload: Record<string, unknown>
+  result?: Record<string, unknown> | null
+  dedupe_key?: string | null
+  attempts: number
+  max_attempts: number
+  available_at: string
+  claimed_at?: string | null
+  finished_at?: string | null
+  last_error?: string | null
+  created_at: string
+}
+
+export type RuntimeInfo = {
+  app_name: string
+  api_prefix: string
+  storage_root: string
+  uploads_root: string
+  exports_root: string
+  agent_manifest_url: string
+  allow_origins: string[]
+  local_ai: {
+    configured: boolean
+    base_url?: string | null
+    model: string
+    timeout_seconds: number
+    reachable: boolean
+    available_models: string[]
+    selected_model_available: boolean
+    error?: string | null
+  }
+  jobs: {
+    queued: number
+    running: number
+    failed: number
+  }
+  last_export_at?: string | null
+  requested_by: string
+}
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers ?? {})
+  if (init?.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
     ...init,
+    headers,
   })
 
   if (!response.ok) {
@@ -256,24 +319,32 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ username, password }),
   }),
+  logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
   getSession: () => request<{ actor: { id: string; type: string; display_name: string; scopes: string[] } }>('/auth/session'),
   getDashboard: () => request<{ cards: DashboardCard[]; available_modules: string[] }>('/dashboard'),
+  getRuntime: () => request<RuntimeInfo>('/runtime'),
+  listJobs: (status?: string) => request<{ items: JobRecord[]; total: number }>(`/jobs${status ? `?status=${encodeURIComponent(status)}` : ''}`),
   listFoods: (search?: string) => request<{ items: FoodItem[]; total: number }>(`/foods${search ? `?search=${encodeURIComponent(search)}` : ''}`),
   createFood: (payload: Partial<FoodItem> & { name: string }) => request<FoodItem>('/foods', { method: 'POST', body: JSON.stringify(payload) }),
+  listRecipes: () => request<{ items: Recipe[]; total: number }>('/recipes'),
+  createRecipe: (payload: Record<string, unknown>) => request<Recipe>('/recipes', { method: 'POST', body: JSON.stringify(payload) }),
   listMeals: () => request<{ items: MealEntry[]; total: number }>('/meals'),
   createMeal: (payload: Record<string, unknown>) => request<MealEntry>('/meals', { method: 'POST', body: JSON.stringify(payload) }),
   listMealTemplates: () => request<{ items: MealTemplate[]; total: number }>('/meal-templates'),
+  createMealTemplate: (payload: Record<string, unknown>) => request<MealTemplate>('/meal-templates', { method: 'POST', body: JSON.stringify(payload) }),
   listMealPhotos: () => request<{ items: MealPhotoDraft[]; total: number }>('/meal-photos'),
   uploadMealPhoto: (file: File) => {
     const formData = new FormData()
     formData.append('file', file)
     return upload<MealPhotoDraft>('/meal-photos', formData)
   },
+  rerunMealPhotoAnalysis: (draftId: string) => request<MealPhotoDraft>(`/meal-photos/${draftId}/analyze`, { method: 'POST' }),
   confirmMealPhoto: (draftId: string, payload: Record<string, unknown>) => request<MealEntry>(`/meal-photos/${draftId}/confirm`, { method: 'POST', body: JSON.stringify(payload) }),
   listExercises: () => request<{ items: Exercise[]; total: number }>('/exercises'),
   createExercise: (payload: Record<string, unknown>) => request<Exercise>('/exercises', { method: 'POST', body: JSON.stringify(payload) }),
   getExerciseProgression: (exerciseId: string) => request<{ recommendation: { recommendation: string; next_load_kg: number; reason: string } }>(`/exercises/${exerciseId}/progression`),
   listWorkoutTemplates: () => request<{ items: WorkoutTemplate[]; total: number }>('/workout-templates'),
+  createWorkoutTemplate: (payload: Record<string, unknown>) => request<WorkoutTemplate>('/workout-templates', { method: 'POST', body: JSON.stringify(payload) }),
   listWorkoutSessions: () => request<{ items: WorkoutSession[]; total: number }>('/workout-sessions'),
   createWorkoutSession: (payload: Record<string, unknown>) => request<WorkoutSession>('/workout-sessions', { method: 'POST', body: JSON.stringify(payload) }),
   listWeightEntries: () => request<{ items: WeightEntry[]; total: number }>('/weight-entries'),
@@ -287,5 +358,9 @@ export const api = {
   createApiKey: (payload: Record<string, unknown>) => request<ApiKeyRecord>('/api-keys', { method: 'POST', body: JSON.stringify(payload) }),
   listExports: () => request<{ items: ExportRecord[]; total: number }>('/exports'),
   createExport: () => request<ExportRecord>('/exports', { method: 'POST' }),
-  getAgentManifestUrl: () => (import.meta.env.VITE_AGENT_MANIFEST_URL ?? 'http://localhost:8000/.well-known/fitnesspal-agent.json'),
+  restoreExport: (payload: Record<string, unknown>) => request<{ status: string; counts: Record<string, number> }>('/exports/restore', {
+    method: 'POST',
+    body: JSON.stringify({ payload }),
+  }),
+  getAgentManifestUrl: () => (import.meta.env.VITE_AGENT_MANIFEST_URL ?? '/.well-known/fitnesspal-agent.json'),
 }

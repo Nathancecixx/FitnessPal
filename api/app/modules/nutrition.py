@@ -632,32 +632,39 @@ def analyze_photo_job(session: Session, payload: dict[str, Any]) -> dict[str, An
     draft = session.get(PhotoAnalysisDraft, payload["draft_id"])
     if not draft:
         raise ValueError("Photo draft not found.")
-    draft.status = "processing"
-    session.commit()
-    result = analyze_meal_photo(Path(draft.source_path))
-    draft.status = "ready"
-    draft.provider = str(result.get("provider"))
-    draft.model_name = str(result.get("model_name"))
-    draft.confidence = float(result.get("confidence") or 0)
-    draft.candidates_json = [
-        {
-            "label": item.get("label", "Unknown item"),
-            "grams": item.get("grams"),
-            "calories": item.get("calories"),
-            "protein_g": item.get("protein_g"),
-            "carbs_g": item.get("carbs_g"),
-            "fat_g": item.get("fat_g"),
-            "fiber_g": item.get("fiber_g", 0),
-            "sodium_mg": item.get("sodium_mg", 0),
-            "source_type": "photo_ai",
-        }
-        for item in result.get("items", [])
-    ]
-    if not draft.candidates_json:
-        draft.status = "needs_review"
-        draft.error_message = "No candidates returned by AI provider."
-    session.commit()
-    return serialize_photo_draft(draft)
+    try:
+        draft.status = "processing"
+        draft.error_message = None
+        session.commit()
+        result = analyze_meal_photo(Path(draft.source_path))
+        draft.status = "ready"
+        draft.provider = str(result.get("provider"))
+        draft.model_name = str(result.get("model_name"))
+        draft.confidence = float(result.get("confidence") or 0)
+        draft.candidates_json = [
+            {
+                "label": item.get("label", "Unknown item"),
+                "grams": item.get("grams"),
+                "calories": item.get("calories"),
+                "protein_g": item.get("protein_g"),
+                "carbs_g": item.get("carbs_g"),
+                "fat_g": item.get("fat_g"),
+                "fiber_g": item.get("fiber_g", 0),
+                "sodium_mg": item.get("sodium_mg", 0),
+                "source_type": "photo_ai",
+            }
+            for item in result.get("items", [])
+        ]
+        if not draft.candidates_json:
+            draft.status = "needs_review"
+            draft.error_message = "No candidates returned by AI provider."
+        session.commit()
+        return serialize_photo_draft(draft)
+    except Exception as exc:
+        draft.status = "failed"
+        draft.error_message = str(exc)
+        session.commit()
+        raise
 
 
 manifest = ModuleManifest(
