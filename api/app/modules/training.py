@@ -180,12 +180,16 @@ def create_routine(
 ) -> dict[str, Any]:
     row = Routine(name=payload.name, goal=payload.goal, schedule_notes=payload.schedule_notes, notes=payload.notes)
     session.add(row)
-    session.commit()
-    for item in payload.items:
-        if not session.get(Exercise, item.exercise_id):
-            raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
-        session.add(RoutineExercise(routine_id=row.id, **item.model_dump()))
-    session.commit()
+    try:
+        session.flush()
+        for item in payload.items:
+            if not session.get(Exercise, item.exercise_id):
+                raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
+            session.add(RoutineExercise(routine_id=row.id, **item.model_dump()))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     write_audit(session, actor, "routine.created", "routine", row.id, payload.model_dump())
     return serialize_routine(session, row)
 
@@ -206,12 +210,16 @@ def create_workout_template(
         raise HTTPException(status_code=404, detail="Routine not found.")
     row = WorkoutTemplate(name=payload.name, routine_id=payload.routine_id, notes=payload.notes)
     session.add(row)
-    session.commit()
-    for item in payload.items:
-        if not session.get(Exercise, item.exercise_id):
-            raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
-        session.add(WorkoutTemplateExercise(workout_template_id=row.id, **item.model_dump()))
-    session.commit()
+    try:
+        session.flush()
+        for item in payload.items:
+            if not session.get(Exercise, item.exercise_id):
+                raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
+            session.add(WorkoutTemplateExercise(workout_template_id=row.id, **item.model_dump()))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     write_audit(session, actor, "workout_template.created", "workout_template", row.id, payload.model_dump())
     return serialize_workout_template(session, row)
 
@@ -262,42 +270,45 @@ def create_workout_session(
         bodyweight_kg=payload.bodyweight_kg,
     )
     session.add(row)
-    session.commit()
-
     total_volume = 0.0
     working_sets = 0
-    for item in payload.sets:
-        exercise = session.get(Exercise, item.exercise_id)
-        if not exercise or exercise.deleted_at is not None:
-            raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
-        prior_max = session.scalar(
-            select(func.max(SetEntry.load_kg)).where(SetEntry.exercise_id == exercise.id, SetEntry.is_warmup.is_(False))
-        ) or 0
-        is_pr = not item.is_warmup and item.load_kg >= prior_max and item.reps >= exercise.rep_target_min
-        progression_label = "warmup" if item.is_warmup else ("pr" if is_pr else "working")
-        session.add(
-            SetEntry(
-                workout_session_id=row.id,
-                exercise_id=item.exercise_id,
-                template_exercise_id=item.template_exercise_id,
-                set_index=item.set_index,
-                reps=item.reps,
-                load_kg=item.load_kg,
-                rir=item.rir,
-                rpe=item.rpe,
-                rest_seconds=item.rest_seconds,
-                is_warmup=item.is_warmup,
-                is_pr=is_pr,
-                progression_label=progression_label,
-                notes=item.notes,
+    try:
+        session.flush()
+        for item in payload.sets:
+            exercise = session.get(Exercise, item.exercise_id)
+            if not exercise or exercise.deleted_at is not None:
+                raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
+            prior_max = session.scalar(
+                select(func.max(SetEntry.load_kg)).where(SetEntry.exercise_id == exercise.id, SetEntry.is_warmup.is_(False))
+            ) or 0
+            is_pr = not item.is_warmup and item.load_kg >= prior_max and item.reps >= exercise.rep_target_min
+            progression_label = "warmup" if item.is_warmup else ("pr" if is_pr else "working")
+            session.add(
+                SetEntry(
+                    workout_session_id=row.id,
+                    exercise_id=item.exercise_id,
+                    template_exercise_id=item.template_exercise_id,
+                    set_index=item.set_index,
+                    reps=item.reps,
+                    load_kg=item.load_kg,
+                    rir=item.rir,
+                    rpe=item.rpe,
+                    rest_seconds=item.rest_seconds,
+                    is_warmup=item.is_warmup,
+                    is_pr=is_pr,
+                    progression_label=progression_label,
+                    notes=item.notes,
+                )
             )
-        )
-        if not item.is_warmup:
-            total_volume += item.load_kg * item.reps
-            working_sets += 1
-    row.total_volume_kg = round(total_volume, 2)
-    row.total_sets = working_sets
-    session.commit()
+            if not item.is_warmup:
+                total_volume += item.load_kg * item.reps
+                working_sets += 1
+        row.total_volume_kg = round(total_volume, 2)
+        row.total_sets = working_sets
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     enqueue_job(session, "insights.recompute", {"source": "workout", "workout_session_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
     write_audit(session, actor, "workout_session.created", "workout_session", row.id, payload.model_dump())
     return serialize_workout_session(session, row)

@@ -159,12 +159,16 @@ def create_recipe(
         tags_json=payload.tags_json,
     )
     session.add(row)
-    session.commit()
-    for item in payload.items:
-        if not session.get(FoodItem, item.food_id):
-            raise HTTPException(status_code=404, detail=f"Food {item.food_id} not found.")
-        session.add(RecipeItem(recipe_id=row.id, food_id=item.food_id, grams=item.grams))
-    session.commit()
+    try:
+        session.flush()
+        for item in payload.items:
+            if not session.get(FoodItem, item.food_id):
+                raise HTTPException(status_code=404, detail=f"Food {item.food_id} not found.")
+            session.add(RecipeItem(recipe_id=row.id, food_id=item.food_id, grams=item.grams))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     session.refresh(row)
     write_audit(session, actor, "recipe.created", "recipe", row.id, payload.model_dump())
     return serialize_recipe(session, row)
@@ -192,11 +196,15 @@ def create_meal_template(
 ) -> dict[str, Any]:
     row = MealTemplate(name=payload.name, meal_type=payload.meal_type, notes=payload.notes, tags_json=payload.tags_json)
     session.add(row)
-    session.commit()
-    for item in payload.items:
-        normalized = normalize_meal_item(session, item)
-        session.add(MealTemplateItem(meal_template_id=row.id, **normalized))
-    session.commit()
+    try:
+        session.flush()
+        for item in payload.items:
+            normalized = normalize_meal_item(session, item)
+            session.add(MealTemplateItem(meal_template_id=row.id, **normalized))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     session.refresh(row)
     write_audit(session, actor, "meal_template.created", "meal_template", row.id, payload.model_dump())
     return serialize_meal_template(session, row)
