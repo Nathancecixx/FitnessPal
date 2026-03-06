@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+node_modules/
+dist/
+web/dist/
+api/.pytest_cache/
+api/.ruff_cache/
+storage/uploads/*
+storage/exports/*
+!storage/uploads/.gitkeep
+!storage/exports/.gitkeep

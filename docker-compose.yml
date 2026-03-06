@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fitnesspal
+      POSTGRES_USER: fitnesspal
+      POSTGRES_PASSWORD: fitnesspal
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fitnesspal -d fitnesspal"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./api
+    environment:
+      FITNESSPAL_DATABASE_URL: postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal
+      FITNESSPAL_STORAGE_ROOT: /srv/storage
+      FITNESSPAL_ALLOW_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080
+      FITNESSPAL_AGENT_MANIFEST_URL: http://localhost:8000/.well-known/fitnesspal-agent.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./storage:/srv/storage
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: ./api
+    command: ["python", "-m", "app.worker"]
+    environment:
+      FITNESSPAL_DATABASE_URL: postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal
+      FITNESSPAL_STORAGE_ROOT: /srv/storage
+      FITNESSPAL_ALLOW_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080
+      FITNESSPAL_AGENT_MANIFEST_URL: http://localhost:8000/.well-known/fitnesspal-agent.json
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./storage:/srv/storage
+
+  web:
+    build:
+      context: ./web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
