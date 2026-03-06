@@ -46,36 +46,40 @@ FitnessPal is usable today for local production-style testing.
 
 Implemented now:
 
-- nutrition logging with foods, recipes, meal templates, manual macro logging, and meal photo draft analysis
-- training logging with exercises, workout templates, routines, sessions, set-level logging, PR detection, and progression recommendations
-- weight tracking with rolling 7-day and 30-day trends
+- nutrition logging with foods, recipes, meal templates, manual macro logging, barcode lookup, nutrition-label photo drafts, and meal photo draft analysis
+- training logging with exercises, workout templates, routines, sessions, set-level logging, PR detection, progression recommendations, and session editing
+- weight tracking with rolling 7-day and 30-day trends plus edit/delete correction flows
 - insight snapshots that connect calories, bodyweight, training volume, and recovery flags
-- local auth, API keys, audit logging, export/restore, runtime inspection, and a background job queue
-- a mobile-first web app designed around quick daily logging
+- local auth, scoped API keys, audit logging, export/restore, runtime inspection, and a background job queue
+- assistant quick capture for reviewable natural-language drafts before write actions
+- versioned Alembic migrations with startup schema checks for safer upgrades
+- a mobile-first web app with lazy-loaded routes and installable PWA basics
 
 Not fully mature yet:
 
-- database schema changes are still managed via SQLAlchemy `create_all()` rather than versioned migrations
-- API key scopes are stored, but route-level scope enforcement is not yet fully wired across the application
-- automated test coverage is still concentrated in logic tests rather than full integration and end-to-end coverage
-- the frontend bundle still needs chunk-splitting work for faster first load on slower phones
+- automated coverage is still mostly backend unit and transaction tests rather than end-to-end browser coverage
+- AI parsing and label/photo extraction stay review-first and depend heavily on the configured local model
+- barcode import quality depends on external OpenFoodFacts coverage for the scanned product
 
 ## Feature Summary
 
 ### Nutrition
 
 - create foods with macro data
+- import foods from barcode lookup and nutrition-label photos
 - build recipes from saved foods and gram amounts
 - build reusable meal templates
 - log meals manually with calories, protein, carbs, and fat
 - upload meal photos for AI-assisted draft generation
-- review and confirm meal photo drafts before they become saved meals
+- edit and delete logged meals after review
+- review and confirm AI-generated drafts before they become saved meals
 
 ### Training
 
 - create exercises with progression defaults
 - define workout templates and routines
 - log workout sessions with set-by-set details
+- edit, repeat, and delete logged workout sessions
 - mark PRs automatically based on performance
 - generate progression recommendations using recent sets and bodyweight/calorie context
 
@@ -83,14 +87,16 @@ Not fully mature yet:
 
 - log weight entries
 - optionally include body fat percentage, waist, and notes
+- edit and delete check-ins without leaving the main flow
 - calculate rolling 7-day and 30-day trend lines
 - expose weight trend per week for use in dashboard and coaching logic
 
 ### Platform and Agent Workflows
 
 - local session-cookie auth for the web app
-- bearer API keys for OpenClaw and other trusted local agents
+- bearer API keys for OpenClaw and other trusted local agents, with route scopes and namespace wildcards
 - machine-readable agent manifest at `/.well-known/fitnesspal-agent.json`
+- natural-language draft parsing at `POST /api/v1/assistant/parse`
 - export and restore flows for local backups
 - background job inspection from the UI
 - runtime inspection including local AI connectivity and model availability
@@ -245,6 +251,7 @@ FitnessPal is designed to be agent-friendly.
 3. Generate an API key for OpenClaw.
 4. Point OpenClaw at the agent manifest URL.
 5. Use `Idempotency-Key` headers for write requests so retries remain safe.
+6. Prefer narrowly scoped API keys such as `nutrition:*` or `assistant:use,metrics:write` instead of full-control tokens.
 
 ### Agent-facing resource groups
 
@@ -253,6 +260,7 @@ FitnessPal is designed to be agent-friendly.
 - `/meal-templates`
 - `/meals`
 - `/meal-photos`
+- `/assistant/parse`
 - `/exercises`
 - `/routines`
 - `/workout-templates`
@@ -291,6 +299,7 @@ Install dependencies and run the API:
 
 ```bash
 pip install -e .[dev]
+python -m alembic upgrade head
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -335,6 +344,9 @@ The root `.env.example` is the easiest starting point for Docker-based developme
 | `FITNESSPAL_LOCAL_AI_BASE_URL` | local AI endpoint | `http://host.docker.internal:11434/v1` |
 | `FITNESSPAL_LOCAL_AI_MODEL` | image-capable model name | `qwen3-vl:8b` |
 | `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | AI request timeout | `90` |
+| `FITNESSPAL_BARCODE_LOOKUP_BASE_URL` | barcode product lookup base URL | `https://world.openfoodfacts.org` |
+| `FITNESSPAL_BARCODE_LOOKUP_TIMEOUT_SECONDS` | barcode lookup timeout | `10` |
+| `FITNESSPAL_BARCODE_LOOKUP_USER_AGENT` | outbound barcode lookup user-agent | `FitnessPal/0.1.0` |
 
 Backend-only environment details are documented in [`api/README.md`](api/README.md).
 
@@ -358,6 +370,11 @@ Available workflows:
 - create exports with `POST /api/v1/exports`
 - download exports with `GET /api/v1/exports/{id}/download`
 - restore exports with `POST /api/v1/exports/restore`
+
+### Migrations
+
+- app startup automatically stamps legacy databases and upgrades to the latest Alembic revision
+- manual upgrade path: `cd api && python -m alembic upgrade head`
 
 ### Storage locations
 
@@ -408,22 +425,20 @@ docker compose ps
 
 - single-user only
 - local-first by design, not a hosted multi-tenant SaaS
-- migrations are not implemented yet
-- API key scopes are stored but not comprehensively enforced at route level yet
+- end-to-end browser coverage is still missing
+- assistant parsing remains a review-and-apply workflow rather than a fully conversational coach loop
 - tests do not yet cover the full integration surface
 - meal photo analysis quality depends entirely on the configured local vision model
-- the frontend bundle still needs code splitting work
+- barcode imports are only as complete as the upstream product database
 
 ## Roadmap Ideas
 
-- Alembic or another migration workflow
-- stronger route-level scope enforcement
 - end-to-end browser tests
-- richer delete, edit, and archive flows
 - progress photo support
 - richer workout analytics and history views
 - generated typed frontend client from OpenAPI
-- chunk-splitting and performance tuning for lower-powered mobile devices
+- richer assistant review/apply flows with user-facing confirmations and batching
+- offline-first sync and background retry for mobile logging
 
 ## License
 

@@ -1,9 +1,11 @@
 import { Link } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 
 import { StatCard, TinyLineChart } from '../../components/cards/stat-card'
-import { EmptyState, PageIntro, Panel } from '../../components/ui'
-import { api } from '../../lib/api'
+import { ActionButton, EmptyState, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
+import { api, type AssistantDraft } from '../../lib/api'
+import { queryClient } from '../../lib/query-client'
 
 const quickActions = [
   { to: '/nutrition', title: 'Log food', subtitle: 'Meal, photo, recipe, or template', accent: 'amber' },
@@ -15,11 +17,78 @@ const quickActions = [
 export function DashboardPage() {
   const dashboardQuery = useQuery({ queryKey: ['dashboard'], queryFn: api.getDashboard })
   const insightsQuery = useQuery({ queryKey: ['insights'], queryFn: api.getInsights })
+  const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
+  const [assistantNote, setAssistantNote] = useState('Weighed 82.4 kg this morning and ate lunch for 650 kcal with 45P 60C 20F')
+  const [assistantResult, setAssistantResult] = useState<Awaited<ReturnType<typeof api.parseAssistantNote>> | null>(null)
 
   const cards = dashboardQuery.data?.cards ?? []
   const insights = insightsQuery.data?.snapshot.payload
   const calorieSeries = Object.values(insights?.nutrition.daily_calories ?? {}).slice(-7)
   const weightSeries = insights?.body.trend_7 ?? []
+
+  const parseAssistant = useMutation({
+    mutationFn: () => api.parseAssistantNote(assistantNote),
+    onSuccess: (result) => setAssistantResult(result),
+  })
+
+  const applyAssistantDraft = useMutation({
+    mutationFn: async (draft: AssistantDraft) => {
+      if (draft.kind === 'meal_entry') {
+        return api.createMeal(draft.payload)
+      }
+      if (draft.kind === 'weight_entry') {
+        return api.createWeightEntry(draft.payload)
+      }
+
+      const existingExercises = exercisesQuery.data?.items ?? []
+      const knownExerciseIds = new Map(existingExercises.map((exercise) => [exercise.name.trim().toLowerCase(), exercise.id]))
+      const sets = []
+      for (const entry of draft.payload.sets) {
+        let exerciseId = entry.exercise_id
+        const label = (entry.exercise_label ?? draft.payload.exercise_name ?? '').trim()
+        if (!exerciseId && label) {
+          const knownId = knownExerciseIds.get(label.toLowerCase())
+          if (knownId) {
+            exerciseId = knownId
+          } else {
+            const created = await api.createExercise({
+              name: label,
+              rep_target_min: Math.max(entry.reps - 2, 1),
+              rep_target_max: entry.reps,
+              load_increment: 2.5,
+            })
+            exerciseId = created.id
+            knownExerciseIds.set(label.toLowerCase(), created.id)
+          }
+        }
+        if (!exerciseId) {
+          throw new Error('Workout draft needs an exercise name before it can be applied.')
+        }
+        sets.push({
+          exercise_id: exerciseId,
+          set_index: entry.set_index,
+          reps: entry.reps,
+          load_kg: entry.load_kg,
+          rir: entry.rir ?? null,
+        })
+      }
+      return api.createWorkoutSession({ notes: draft.payload.notes, sets })
+    },
+    onSuccess: async (_, draft) => {
+      setAssistantResult((current) => current
+        ? { ...current, drafts: current.drafts.filter((item) => item !== draft) }
+        : current)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['meals'] }),
+        queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
+        queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
+        queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
+        queryClient.invalidateQueries({ queryKey: ['exercises'] }),
+      ])
+    },
+  })
 
   return (
     <div className="space-y-4">
@@ -54,6 +123,44 @@ export function DashboardPage() {
             <TinyLineChart title="7-day calories" points={calorieSeries.length ? calorieSeries : [0]} color="#d97706" />
             <TinyLineChart title="7-day weight trend" points={weightSeries.length ? weightSeries : [0]} color="#fb7185" />
           </div>
+
+          <Panel title="Assistant quick capture" subtitle="Turn a free-form note into reviewable drafts before anything gets written.">
+            <div className="space-y-3">
+              <LabelledTextArea
+                label="Natural-language note"
+                value={assistantNote}
+                onChange={setAssistantNote}
+                rows={4}
+                placeholder="Ate dinner for 720 kcal with 55P 70C 18F, and weighed 82.4 kg this morning"
+              />
+              <div className="flex flex-wrap gap-2">
+                <ActionButton onClick={() => parseAssistant.mutate()}>{parseAssistant.isPending ? 'Parsing…' : 'Draft actions'}</ActionButton>
+              </div>
+              {parseAssistant.isError ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{parseAssistant.error.message}</div> : null}
+              {assistantResult?.warnings?.length ? (
+                <div className="space-y-2 rounded-[22px] bg-amber-50 p-4 text-sm text-amber-950">
+                  {assistantResult.warnings.map((warning) => <div key={warning}>{warning}</div>)}
+                </div>
+              ) : null}
+              {assistantResult?.drafts?.length ? (
+                <div className="space-y-3">
+                  {assistantResult.drafts.map((draft, index) => (
+                    <div key={`${draft.kind}-${index}`} className="rounded-[22px] border border-slate-200 bg-white p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-xs uppercase tracking-[0.2em] text-slate-500">{draft.kind.replace('_', ' ')}</div>
+                          <div className="mt-2 font-semibold text-slate-950">{draft.summary}</div>
+                        </div>
+                        <ActionButton onClick={() => applyAssistantDraft.mutate(draft)} className="w-auto">
+                          {applyAssistantDraft.isPending ? 'Applying…' : 'Apply'}
+                        </ActionButton>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </Panel>
         </div>
 
         <Panel title="Coach feed" subtitle="Keep the next useful action visible without turning the app into homework.">

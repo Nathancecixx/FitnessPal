@@ -16,14 +16,16 @@ from app.core.logic import rolling_average, weight_trend_per_week
 from app.core.models import Goal, InsightSnapshot, MealEntry, SetEntry, WeightEntry, WorkoutSession, utcnow
 from app.core.modules import ModuleManifest
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
-from app.core.security import Actor, get_actor
+from app.core.security import Actor, get_actor, require_scope
 
 
 router = APIRouter(route_class=IdempotentRoute, tags=["insights"])
+insights_read = require_scope("insights:read")
+insights_write = require_scope("insights:write")
 
 
 @router.get("/insights")
-def get_insights(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def get_insights(actor: Actor = Depends(insights_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     snapshot = session.scalars(select(InsightSnapshot).order_by(InsightSnapshot.created_at.desc()).limit(1)).first()
     if not snapshot:
         payload = compute_insight_payload(session)
@@ -32,7 +34,7 @@ def get_insights(actor: Actor = Depends(get_actor), session: Session = Depends(g
 
 
 @router.post("/insights/recompute", status_code=status.HTTP_201_CREATED)
-def recompute_insights(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def recompute_insights(actor: Actor = Depends(insights_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     payload = compute_insight_payload(session)
     snapshot = persist_snapshot(session, payload, source="manual")
     write_audit(session, actor, "insights.recomputed", "insights", snapshot.id, {"source": "manual"})

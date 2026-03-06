@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import ReactECharts from 'echarts-for-react'
 
+import { EChart } from '../../components/charts/echart'
 import { ActionButton, DataList, EmptyState, PageIntro, Panel } from '../../components/ui'
 import { api } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
@@ -45,16 +45,25 @@ export function InsightsPage() {
 
             <Panel title="Nutrition and trend charts" subtitle="Daily calorie totals and weight smoothing from local history.">
               <div className="grid gap-4 lg:grid-cols-2">
-                <ReactECharts
+                <EChart
                   style={{ height: 280 }}
                   option={{
                     tooltip: { trigger: 'axis' },
                     xAxis: { type: 'category', data: calorieEntries.map(([day]) => day) },
                     yAxis: { type: 'value' },
-                    series: [{ type: 'bar', data: calorieEntries.map(([, calories]) => calories), itemStyle: { color: '#d97706' } }],
+                    series: [
+                      {
+                        type: 'line',
+                        smooth: true,
+                        data: calorieEntries.map(([, calories]) => calories),
+                        lineStyle: { color: '#d97706', width: 3 },
+                        areaStyle: { color: '#d97706', opacity: 0.14 },
+                        showSymbol: false,
+                      },
+                    ],
                   }}
                 />
-                <ReactECharts
+                <EChart
                   style={{ height: 280 }}
                   option={{
                     tooltip: { trigger: 'axis' },

@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import ReactECharts from 'echarts-for-react'
 import { useMemo, useState } from 'react'
 
+import { EChart } from '../../components/charts/echart'
 import { ActionButton, DataList, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
@@ -23,16 +23,39 @@ export function WeightPage() {
     waist_cm: '',
     notes: '',
   })
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
 
-  const createEntry = useMutation({
-    mutationFn: () => api.createWeightEntry({
+  const saveEntry = useMutation({
+    mutationFn: () => (editingEntryId ? api.updateWeightEntry(editingEntryId, {
       weight_kg: Number(draft.weight_kg),
       body_fat_pct: draft.body_fat_pct ? Number(draft.body_fat_pct) : undefined,
       waist_cm: draft.waist_cm ? Number(draft.waist_cm) : undefined,
       notes: draft.notes || undefined,
-    }),
+    }) : api.createWeightEntry({
+      weight_kg: Number(draft.weight_kg),
+      body_fat_pct: draft.body_fat_pct ? Number(draft.body_fat_pct) : undefined,
+      waist_cm: draft.waist_cm ? Number(draft.waist_cm) : undefined,
+      notes: draft.notes || undefined,
+    })),
     onSuccess: async () => {
       setDraft({ weight_kg: '', body_fat_pct: '', waist_cm: '', notes: '' })
+      setEditingEntryId(null)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
+        queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights'] }),
+      ])
+    },
+  })
+
+  const deleteEntry = useMutation({
+    mutationFn: (entryId: string) => api.deleteWeightEntry(entryId),
+    onSuccess: async (_, entryId) => {
+      if (editingEntryId === entryId) {
+        setEditingEntryId(null)
+        setDraft({ weight_kg: '', body_fat_pct: '', waist_cm: '', notes: '' })
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
         queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
@@ -72,7 +95,7 @@ export function WeightPage() {
               className="space-y-4"
               onSubmit={(event) => {
                 event.preventDefault()
-                createEntry.mutate()
+                saveEntry.mutate()
               }}
             >
               <LabelledInput
@@ -97,7 +120,10 @@ export function WeightPage() {
                 </div>
               </div>
 
-              <ActionButton type="submit" className="w-full sm:w-auto">Save weigh-in</ActionButton>
+              <div className="flex flex-wrap gap-2">
+                <ActionButton type="submit" className="w-full sm:w-auto">{editingEntryId ? 'Update weigh-in' : 'Save weigh-in'}</ActionButton>
+                {editingEntryId ? <ActionButton tone="secondary" onClick={() => { setEditingEntryId(null); setDraft({ weight_kg: '', body_fat_pct: '', waist_cm: '', notes: '' }) }} className="w-full sm:w-auto">Cancel</ActionButton> : null}
+              </div>
 
               <details className="rounded-[22px] border border-slate-200 bg-white">
                 <summary className="cursor-pointer list-none px-4 py-4">
@@ -150,6 +176,24 @@ export function WeightPage() {
                   </div>
                   {entry.waist_cm != null ? <div className="mt-3 text-sm text-slate-500">Waist: {entry.waist_cm} cm</div> : null}
                   {entry.notes ? <div className="mt-2 text-sm text-slate-500">{entry.notes}</div> : null}
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <ActionButton
+                      tone="secondary"
+                      onClick={() => {
+                        setEditingEntryId(entry.id)
+                        setDraft({
+                          weight_kg: String(entry.weight_kg),
+                          body_fat_pct: entry.body_fat_pct != null ? String(entry.body_fat_pct) : '',
+                          waist_cm: entry.waist_cm != null ? String(entry.waist_cm) : '',
+                          notes: entry.notes ?? '',
+                        })
+                      }}
+                      className="w-auto"
+                    >
+                      Edit
+                    </ActionButton>
+                    <ActionButton tone="secondary" onClick={() => deleteEntry.mutate(entry.id)} className="w-auto">Delete</ActionButton>
+                  </div>
                 </div>
               ))}
               {!entries.length ? <EmptyState title="No weigh-ins yet" body="Log the first morning weight and the trend cards will start to become useful almost immediately." /> : null}
@@ -160,13 +204,12 @@ export function WeightPage() {
         <div className="space-y-4">
           <Panel title="Trend view" subtitle="Use the smoothed lines to make decisions instead of reacting to every spike.">
             {points.length ? (
-              <ReactECharts
+              <EChart
                 style={{ height: 300 }}
                 option={{
                   animationDuration: 700,
                   tooltip: { trigger: 'axis' },
                   grid: { left: 24, right: 18, top: 28, bottom: 24 },
-                  legend: { textStyle: { color: '#475569' } },
                   xAxis: {
                     type: 'category',
                     data: points.map((point) => new Date(point.logged_at).toLocaleDateString()),

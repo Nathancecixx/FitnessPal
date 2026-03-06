@@ -1,0 +1,17 @@
+{
+  "name": "FitnessPal",
+  "short_name": "FitnessPal",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fff8ef",
+  "theme_color": "#0f172a",
+  "description": "Local-first fitness tracking for nutrition, training, weight, and AI-assisted daily logging.",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

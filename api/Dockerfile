@@ -7,7 +7,9 @@ ENV PYTHONUNBUFFERED=1
 
 COPY pyproject.toml ./
 COPY README.md ./
+COPY alembic.ini ./
 COPY app ./app
+COPY migrations ./migrations
 
 RUN pip install --no-cache-dir .
 

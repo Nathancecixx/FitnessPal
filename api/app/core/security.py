@@ -166,10 +166,22 @@ def get_optional_actor(
 
 
 def require_scope(*required_scopes: str):
+    def scope_matches(granted_scope: str, required_scope: str) -> bool:
+        if granted_scope == "*" or granted_scope == required_scope:
+            return True
+        if granted_scope.endswith(":*"):
+            prefix = granted_scope[:-2]
+            return required_scope == prefix or required_scope.startswith(f"{prefix}:")
+        return False
+
     def dependency(actor: Actor = Depends(get_actor)) -> Actor:
         if "*" in actor.scopes:
             return actor
-        missing = [scope for scope in required_scopes if scope not in actor.scopes]
+        missing = [
+            scope
+            for scope in required_scopes
+            if not any(scope_matches(granted_scope, scope) for granted_scope in actor.scopes)
+        ]
         if missing:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

@@ -53,5 +53,6 @@ def session_scope() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     import app.core.models  # noqa: F401
+    from app.core.migrations import ensure_schema_current
 
-    Base.metadata.create_all(bind=engine)
+    ensure_schema_current()

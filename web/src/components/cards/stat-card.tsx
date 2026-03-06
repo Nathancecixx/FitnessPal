@@ -1,5 +1,4 @@
-import ReactECharts from 'echarts-for-react'
-
+import { EChart } from '../charts/echart'
 import type { DashboardCard } from '../../lib/api'
 
 export function StatCard({ card }: { card: DashboardCard }) {
@@ -24,7 +23,7 @@ export function TinyLineChart(props: { title: string; points: number[]; color: s
   return (
     <div className="rounded-[24px] border border-slate-200 bg-white/88 p-4 shadow-halo md:rounded-[28px] md:p-5">
       <div className="font-display text-lg text-slate-950">{props.title}</div>
-      <ReactECharts
+      <EChart
         style={{ height: 160 }}
         option={{
           animationDuration: 600,

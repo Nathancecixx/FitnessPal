@@ -1,9 +1,17 @@
 ﻿import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
-import { ActionButton, DataList, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
+import { ActionButton, DataList, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
+
+const apiKeyPresets = [
+  { label: 'Assistant (Recommended)', value: 'assistant', scopes: ['assistant:use', 'nutrition:*', 'training:*', 'metrics:*', 'insights:*', 'platform:read'] },
+  { label: 'Full access', value: 'full', scopes: ['*'] },
+  { label: 'Read only', value: 'readonly', scopes: ['platform:read', 'nutrition:read', 'training:read', 'metrics:read', 'insights:read'] },
+  { label: 'Nutrition only', value: 'nutrition', scopes: ['nutrition:*', 'metrics:read', 'insights:read'] },
+  { label: 'Training only', value: 'training', scopes: ['training:*', 'metrics:read', 'insights:read'] },
+] as const
 
 export function SettingsPage() {
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession })
@@ -19,6 +27,7 @@ export function SettingsPage() {
 
   const [goalDraft, setGoalDraft] = useState({ category: 'nutrition', title: 'Daily calories', metric_key: 'calories', target_value: '2800', unit: 'kcal', period: 'daily' })
   const [apiKeyName, setApiKeyName] = useState('openclaw')
+  const [apiKeyPreset, setApiKeyPreset] = useState<(typeof apiKeyPresets)[number]['value']>('assistant')
   const [lastToken, setLastToken] = useState('')
   const [restoreText, setRestoreText] = useState('')
   const [restoreStatus, setRestoreStatus] = useState('')
@@ -41,9 +50,29 @@ export function SettingsPage() {
   })
 
   const createKey = useMutation({
-    mutationFn: () => api.createApiKey({ name: apiKeyName, scopes: ['*'] }),
+    mutationFn: () => api.createApiKey({
+      name: apiKeyName,
+      scopes: apiKeyPresets.find((preset) => preset.value === apiKeyPreset)?.scopes ?? ['assistant:use'],
+    }),
     onSuccess: async (result) => {
       setLastToken(result.token ?? '')
+      await queryClient.invalidateQueries({ queryKey: ['api-keys'] })
+    },
+  })
+
+  const deleteGoal = useMutation({
+    mutationFn: (goalId: string) => api.deleteGoal(goalId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['goals'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights'] }),
+      ])
+    },
+  })
+
+  const revokeKey = useMutation({
+    mutationFn: (keyId: string) => api.revokeApiKey(keyId),
+    onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['api-keys'] })
     },
   })
@@ -122,7 +151,12 @@ export function SettingsPage() {
               </form>
               <div className="mt-4 space-y-2">
                 {(goalsQuery.data?.items ?? []).map((goal) => (
-                  <div key={goal.id} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">{goal.title}: {goal.target_value} {goal.unit}/{goal.period}</div>
+                  <div key={goal.id} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>{goal.title}: {goal.target_value} {goal.unit}/{goal.period}</div>
+                      <ActionButton tone="secondary" onClick={() => deleteGoal.mutate(goal.id)} className="w-auto">Delete</ActionButton>
+                    </div>
+                  </div>
                 ))}
               </div>
             </Panel>
@@ -186,13 +220,27 @@ export function SettingsPage() {
         <div className="space-y-4">
           <Panel title="OpenClaw API key" subtitle="Issue a full-control local token for your agent.">
             <LabelledInput label="Key name" value={apiKeyName} onChange={setApiKeyName} />
+            <div className="mt-3">
+              <LabelledSelect
+                label="Scope preset"
+                value={apiKeyPreset}
+                onChange={(value) => setApiKeyPreset(value as (typeof apiKeyPresets)[number]['value'])}
+                options={apiKeyPresets.map((preset) => ({ label: preset.label, value: preset.value }))}
+              />
+            </div>
             <ActionButton className="mt-3" onClick={() => createKey.mutate()}>Generate key</ActionButton>
             {lastToken ? <div className="mt-4 rounded-[24px] bg-slate-950 px-4 py-4 text-sm text-canvas break-all">{lastToken}</div> : null}
             <div className="mt-4 space-y-3">
               {(apiKeysQuery.data?.items ?? []).map((record) => (
                 <div key={record.id} className="rounded-[24px] bg-slate-100 px-4 py-4 text-sm text-slate-700">
-                  <div className="font-semibold text-slate-950">{record.name}</div>
-                  <div className="mt-1">{record.prefix}</div>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-slate-950">{record.name}</div>
+                      <div className="mt-1">{record.prefix}</div>
+                      <div className="mt-2 text-xs text-slate-500">{record.scopes.join(', ')}</div>
+                    </div>
+                    <ActionButton tone="secondary" onClick={() => revokeKey.mutate(record.id)} className="w-auto">Revoke</ActionButton>
+                  </div>
                 </div>
               ))}
             </div>

@@ -89,7 +89,7 @@ def agent_manifest() -> AgentManifest:
         version="0.1.0",
         base_url=settings.agent_manifest_url.rsplit("/.well-known", 1)[0],
         auth={"type": "bearer_api_key", "login": f"{settings.api_prefix}/auth/login"},
-        capabilities=["nutrition", "training", "weight", "insights", "exports"],
+        capabilities=["nutrition", "training", "weight", "insights", "exports", "assistant"],
         resources=resources,
         examples=examples,
     )

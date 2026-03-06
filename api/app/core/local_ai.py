@@ -98,6 +98,134 @@ def _extract_json_payload(raw_message: str) -> dict[str, Any]:
         return json.loads(message[start : end + 1])
 
 
+def _image_media_type(image_path: Path) -> str:
+    suffix = image_path.suffix.lower()
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _build_image_content(image_path: Path) -> dict[str, Any]:
+    encoded_image = b64encode(image_path.read_bytes()).decode("utf-8")
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{_image_media_type(image_path)};base64,{encoded_image}"},
+    }
+
+
+def _request_local_ai_json(messages: list[dict[str, Any]], temperature: float = 0.2) -> dict[str, Any]:
+    if not settings.local_ai_base_url:
+        raise RuntimeError("Local AI base URL is not configured.")
+
+    payload = {
+        "model": settings.local_ai_model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False,
+    }
+    with httpx.Client(timeout=settings.local_ai_timeout_seconds) as client:
+        response = client.post(_chat_completions_url(settings.local_ai_base_url), json=payload)
+        response.raise_for_status()
+        data = response.json()
+    raw_message = _normalize_message_content(data["choices"][0]["message"]["content"])
+    return _extract_json_payload(raw_message)
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value in ("", None):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _heuristic_text_drafts(text: str) -> dict[str, Any]:
+    lowered = text.lower()
+    warnings: list[str] = []
+    drafts: list[dict[str, Any]] = []
+
+    weight_match = re.search(r"(?P<weight>\d+(?:\.\d+)?)\s*kg", lowered)
+    if weight_match and any(keyword in lowered for keyword in ("weigh", "weight", "scale", "morning", "bf")):
+        weight_value = float(weight_match.group("weight"))
+        body_fat_match = re.search(r"(?P<body_fat>\d+(?:\.\d+)?)\s*%(\s*bf)?", lowered)
+        drafts.append(
+            {
+                "kind": "weight_entry",
+                "summary": f"Log weigh-in at {weight_value:.1f} kg",
+                "payload": {
+                    "weight_kg": weight_value,
+                    "body_fat_pct": float(body_fat_match.group("body_fat")) if body_fat_match else None,
+                },
+            }
+        )
+
+    meal_match = any(keyword in lowered for keyword in ("ate", "meal", "breakfast", "lunch", "dinner", "snack", "kcal"))
+    calories_match = re.search(r"(?P<calories>\d+(?:\.\d+)?)\s*(?:kcal|cal)", lowered)
+    protein_match = re.search(r"(?P<protein>\d+(?:\.\d+)?)\s*p(?:rotein)?", lowered)
+    carbs_match = re.search(r"(?P<carbs>\d+(?:\.\d+)?)\s*c(?:arbs?)?", lowered)
+    fat_match = re.search(r"(?P<fat>\d+(?:\.\d+)?)\s*f(?:at)?", lowered)
+    if meal_match and (calories_match or protein_match or carbs_match or fat_match):
+        drafts.append(
+            {
+                "kind": "meal_entry",
+                "summary": "Log meal from natural language note",
+                "payload": {
+                    "meal_type": next((meal_type for meal_type in ("breakfast", "lunch", "dinner", "snack") if meal_type in lowered), "meal"),
+                    "notes": text.strip(),
+                    "source": "assistant",
+                    "items": [
+                        {
+                            "label": "Assistant quick entry",
+                            "calories": _coerce_float(calories_match.group("calories") if calories_match else None),
+                            "protein_g": _coerce_float(protein_match.group("protein") if protein_match else None),
+                            "carbs_g": _coerce_float(carbs_match.group("carbs") if carbs_match else None),
+                            "fat_g": _coerce_float(fat_match.group("fat") if fat_match else None),
+                            "source_type": "assistant",
+                        }
+                    ],
+                },
+            }
+        )
+
+    workout_match = re.search(
+        r"(?P<exercise>[a-z][a-z0-9\s\-]+?)\s+(?P<sets>\d+)x(?P<reps>\d+)(?:\s*@\s*(?P<load>\d+(?:\.\d+)?))?",
+        lowered,
+    )
+    if workout_match:
+        exercise_label = workout_match.group("exercise").strip().title()
+        sets = int(workout_match.group("sets"))
+        reps = int(workout_match.group("reps"))
+        load = _coerce_float(workout_match.group("load"))
+        drafts.append(
+            {
+                "kind": "workout_session",
+                "summary": f"Log {sets} sets of {exercise_label}",
+                "payload": {
+                    "notes": text.strip(),
+                    "exercise_name": exercise_label,
+                    "sets": [
+                        {
+                            "exercise_label": exercise_label,
+                            "set_index": index + 1,
+                            "reps": reps,
+                            "load_kg": load,
+                            "rir": 2,
+                        }
+                        for index in range(sets)
+                    ],
+                },
+            }
+        )
+
+    if not drafts:
+        warnings.append("The local fallback parser could not turn that note into a structured draft.")
+
+    return {"drafts": drafts, "warnings": warnings, "provider": "heuristic-fallback"}
+
+
 def inspect_local_ai() -> dict[str, Any]:
     if not settings.local_ai_base_url:
         return {
@@ -151,43 +279,31 @@ def analyze_meal_photo(image_path: Path) -> dict[str, object]:
     if not settings.local_ai_base_url:
         return _heuristic_guess(image_path)
 
-    image_bytes = image_path.read_bytes()
-    encoded_image = b64encode(image_bytes).decode("utf-8")
-    prompt = (
-        "Analyze this meal photo for a fitness tracking app. "
-        "Respond with strict JSON only, no markdown, with this shape: "
-        '{"items":[{"label":"string","grams":number,"calories":number,"protein_g":number,"carbs_g":number,"fat_g":number,"fiber_g":number,"sodium_mg":number}],"confidence":number,"notes":"string"}. '
-        "Prefer conservative portion estimates when uncertain."
-    )
-    payload = {
-        "model": settings.local_ai_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You estimate meal components and macros from food photos. Return strict JSON only.",
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"},
-                    },
-                ],
-            },
-        ],
-        "temperature": 0.2,
-        "stream": False,
-    }
-
     try:
-        with httpx.Client(timeout=settings.local_ai_timeout_seconds) as client:
-            response = client.post(_chat_completions_url(settings.local_ai_base_url), json=payload)
-            response.raise_for_status()
-            data = response.json()
-        raw_message = _normalize_message_content(data["choices"][0]["message"]["content"])
-        parsed = _extract_json_payload(raw_message)
+        parsed = _request_local_ai_json(
+            [
+                {
+                    "role": "system",
+                    "content": "You estimate meal components and macros from food photos. Return strict JSON only.",
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Analyze this meal photo for a fitness tracking app. "
+                                'Respond with strict JSON only, no markdown, with this shape: '
+                                '{"items":[{"label":"string","grams":number,"calories":number,"protein_g":number,'
+                                '"carbs_g":number,"fat_g":number,"fiber_g":number,"sodium_mg":number}],'
+                                '"confidence":number,"notes":"string"}. Prefer conservative portion estimates when uncertain.'
+                            ),
+                        },
+                        _build_image_content(image_path),
+                    ],
+                },
+            ]
+        )
         items = parsed.get("items", [])
         return {
             "provider": "openai-compatible-local",
@@ -198,3 +314,88 @@ def analyze_meal_photo(image_path: Path) -> dict[str, object]:
         }
     except Exception:
         return _heuristic_guess(image_path)
+
+
+def analyze_nutrition_label(image_path: Path) -> dict[str, Any]:
+    parsed = _request_local_ai_json(
+        [
+            {
+                "role": "system",
+                "content": "You extract nutrition-label data from images. Return strict JSON only.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Read this nutrition label and return strict JSON only with this shape: "
+                            '{"name":"string","brand":"string|null","serving_name":"string|null","calories":number,'
+                            '"protein_g":number,"carbs_g":number,"fat_g":number,"fiber_g":number,"sugar_g":number,'
+                            '"sodium_mg":number,"notes":"string|null"}. '
+                            "If the image is unclear, use conservative estimates and explain uncertainty in notes."
+                        ),
+                    },
+                    _build_image_content(image_path),
+                ],
+            },
+        ]
+    )
+    return {
+        "provider": "openai-compatible-local",
+        "model_name": settings.local_ai_model,
+        "food": {
+            "name": str(parsed.get("name") or "Scanned food"),
+            "brand": parsed.get("brand"),
+            "serving_name": parsed.get("serving_name"),
+            "calories": _coerce_float(parsed.get("calories")),
+            "protein_g": _coerce_float(parsed.get("protein_g")),
+            "carbs_g": _coerce_float(parsed.get("carbs_g")),
+            "fat_g": _coerce_float(parsed.get("fat_g")),
+            "fiber_g": _coerce_float(parsed.get("fiber_g")),
+            "sugar_g": _coerce_float(parsed.get("sugar_g")),
+            "sodium_mg": _coerce_float(parsed.get("sodium_mg")),
+            "notes": parsed.get("notes"),
+        },
+    }
+
+
+def parse_natural_language_entry(text: str) -> dict[str, Any]:
+    if not settings.local_ai_base_url:
+        return _heuristic_text_drafts(text)
+
+    try:
+        parsed = _request_local_ai_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You translate free-form fitness notes into reviewable action drafts. "
+                        "Return strict JSON only and never assume unknown values."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Convert this note into reviewable fitness logging drafts. "
+                        'Return strict JSON only with this shape: {"drafts":[{"kind":"meal_entry|weight_entry|workout_session",'
+                        '"summary":"string","payload":object}],"warnings":["string"]}. '
+                        "For meal drafts, payload should use FitnessPal meal create fields with an items array. "
+                        "For weight drafts, payload should use weight entry create fields. "
+                        "For workout drafts, payload should include notes plus a sets array where each set has "
+                        "exercise_label, set_index, reps, load_kg, and optional rir. "
+                        f"Note: {text}"
+                    ),
+                },
+            ]
+        )
+        drafts = parsed.get("drafts", [])
+        warnings = parsed.get("warnings", [])
+        return {
+            "drafts": drafts if isinstance(drafts, list) else [],
+            "warnings": warnings if isinstance(warnings, list) else [],
+            "provider": "openai-compatible-local",
+            "model_name": settings.local_ai_model,
+        }
+    except Exception:
+        return _heuristic_text_drafts(text)

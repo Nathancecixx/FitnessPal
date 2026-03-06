@@ -14,7 +14,7 @@ from app.core.audit import write_audit
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.idempotency import IdempotentRoute
-from app.core.local_ai import inspect_local_ai
+from app.core.local_ai import inspect_local_ai, parse_natural_language_entry
 from app.core.modules import ModuleManifest
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
 from app.core.security import (
@@ -24,11 +24,13 @@ from app.core.security import (
     create_session_token,
     ensure_bootstrap_user,
     get_actor,
+    require_scope,
 )
 from app.core.serialization import export_payload, restore_payload
 from app.core.storage import write_json_export
 from app.core.models import (
     ApiKey,
+    AppUser,
     ExportRecord,
     FoodItem,
     Goal,
@@ -43,6 +45,9 @@ from app.core.models import (
 
 settings = get_settings()
 router = APIRouter(route_class=IdempotentRoute, tags=["platform"])
+platform_read = require_scope("platform:read")
+platform_write = require_scope("platform:write")
+assistant_use = require_scope("assistant:use")
 
 
 class LoginRequest(BaseModel):
@@ -67,6 +72,10 @@ class ApiKeyCreate(BaseModel):
 
 class ExportRestoreRequest(BaseModel):
     payload: dict[str, Any]
+
+
+class AssistantParseRequest(BaseModel):
+    note: str
 
 
 @router.get("/health")
@@ -116,7 +125,7 @@ def logout(
 
 
 @router.get("/auth/session")
-def current_session(actor: Actor = Depends(get_actor)) -> dict[str, Any]:
+def current_session(actor: Actor = Depends(platform_read)) -> dict[str, Any]:
     return {
         "actor": {
             "id": actor.actor_id,
@@ -128,7 +137,7 @@ def current_session(actor: Actor = Depends(get_actor)) -> dict[str, Any]:
 
 
 @router.get("/metrics")
-def metrics(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def metrics(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     return {
         "meals": session.scalar(select(func.count(MealEntry.id))) or 0,
         "foods": session.scalar(select(func.count(FoodItem.id))) or 0,
@@ -143,7 +152,7 @@ def metrics(actor: Actor = Depends(get_actor), session: Session = Depends(get_se
 
 
 @router.get("/runtime")
-def get_runtime(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def get_runtime(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     latest_export = session.scalars(select(ExportRecord).order_by(ExportRecord.created_at.desc()).limit(1)).first()
     local_ai_status = inspect_local_ai()
     return {
@@ -176,7 +185,7 @@ def get_runtime(actor: Actor = Depends(get_actor), session: Session = Depends(ge
 
 @router.get("/jobs")
 def list_jobs(
-    actor: Actor = Depends(get_actor),
+    actor: Actor = Depends(platform_read),
     session: Session = Depends(get_session),
     status: str | None = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
@@ -189,7 +198,7 @@ def list_jobs(
 
 
 @router.get("/goals")
-def list_goals(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def list_goals(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     rows = session.scalars(select(Goal).where(Goal.deleted_at.is_(None)).order_by(Goal.created_at.desc())).all()
     return {"items": [serialize_goal(row) for row in rows], "total": len(rows)}
 
@@ -197,7 +206,7 @@ def list_goals(actor: Actor = Depends(get_actor), session: Session = Depends(get
 @router.post("/goals", status_code=status.HTTP_201_CREATED)
 def create_goal(
     payload: GoalCreate,
-    actor: Actor = Depends(get_actor),
+    actor: Actor = Depends(platform_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     goal = Goal(**payload.model_dump())
@@ -209,7 +218,7 @@ def create_goal(
 
 
 @router.delete("/goals/{goal_id}")
-def delete_goal(goal_id: str, actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def delete_goal(goal_id: str, actor: Actor = Depends(platform_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     goal = session.get(Goal, goal_id)
     if not goal or goal.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Goal not found.")
@@ -220,7 +229,7 @@ def delete_goal(goal_id: str, actor: Actor = Depends(get_actor), session: Sessio
 
 
 @router.get("/api-keys")
-def list_api_keys(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def list_api_keys(actor: Actor = Depends(platform_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     rows = session.scalars(select(ApiKey).where(ApiKey.revoked_at.is_(None)).order_by(ApiKey.created_at.desc())).all()
     return {
         "items": [
@@ -241,10 +250,10 @@ def list_api_keys(actor: Actor = Depends(get_actor), session: Session = Depends(
 @router.post("/api-keys", status_code=status.HTTP_201_CREATED)
 def create_api_key_endpoint(
     payload: ApiKeyCreate,
-    actor: Actor = Depends(get_actor),
+    actor: Actor = Depends(platform_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    owner = ensure_bootstrap_user(session)
+    owner = session.get(AppUser, actor.user_id) or ensure_bootstrap_user(session)
     record, token = issue_api_key(session, owner, payload.name, payload.scopes)
     write_audit(session, actor, "api_key.created", "api_key", record.id, {"name": record.name, "scopes": record.scopes})
     return {
@@ -257,7 +266,7 @@ def create_api_key_endpoint(
 
 
 @router.delete("/api-keys/{key_id}")
-def revoke_api_key(key_id: str, actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def revoke_api_key(key_id: str, actor: Actor = Depends(platform_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     record = session.get(ApiKey, key_id)
     if not record or record.revoked_at is not None:
         raise HTTPException(status_code=404, detail="API key not found.")
@@ -268,13 +277,13 @@ def revoke_api_key(key_id: str, actor: Actor = Depends(get_actor), session: Sess
 
 
 @router.get("/exports")
-def list_exports(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def list_exports(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     rows = session.scalars(select(ExportRecord).order_by(ExportRecord.created_at.desc())).all()
     return {"items": [serialize_export(row) for row in rows], "total": len(rows)}
 
 
 @router.post("/exports", status_code=status.HTTP_201_CREATED)
-def create_export(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def create_export(actor: Actor = Depends(platform_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     payload = export_payload(session)
     target = write_json_export("fitnesspal-backup", payload)
     record = ExportRecord(
@@ -292,7 +301,7 @@ def create_export(actor: Actor = Depends(get_actor), session: Session = Depends(
 
 
 @router.get("/exports/{export_id}/download")
-def download_export(export_id: str, actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> FileResponse:
+def download_export(export_id: str, actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> FileResponse:
     record = session.get(ExportRecord, export_id)
     if not record:
         raise HTTPException(status_code=404, detail="Export not found.")
@@ -305,12 +314,23 @@ def download_export(export_id: str, actor: Actor = Depends(get_actor), session: 
 @router.post("/exports/restore")
 def restore_export(
     payload: ExportRestoreRequest,
-    actor: Actor = Depends(get_actor),
+    actor: Actor = Depends(platform_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     counts = restore_payload(session, payload.payload)
     write_audit(session, actor, "export.restored", "export", None, counts)
     return {"status": "restored", "counts": counts}
+
+
+@router.post("/assistant/parse")
+def parse_assistant_note(
+    payload: AssistantParseRequest,
+    actor: Actor = Depends(assistant_use),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    parsed = parse_natural_language_entry(payload.note)
+    write_audit(session, actor, "assistant.parsed", "assistant", None, {"draft_count": len(parsed.get("drafts", []))})
+    return parsed
 
 
 def serialize_goal(goal: Goal) -> dict[str, Any]:
@@ -368,7 +388,7 @@ def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
             description="API, storage, and backup status.",
             accent="emerald",
             value="Healthy",
-            detail=f"Last backup: {latest_export.created_at.strftime('%Y-%m-%d %H:%M') if latest_export else 'Never'} · {queued_jobs} queued jobs",
+            detail=f"Last backup: {latest_export.created_at.strftime('%Y-%m-%d %H:%M') if latest_export else 'Never'} | {queued_jobs} queued jobs",
             status="positive",
         )
     ]
@@ -424,8 +444,16 @@ manifest = ModuleManifest(
             title="Issue agent key",
             method="POST",
             path="/api/v1/api-keys",
-            summary="Create a full-control API key for OpenClaw or local automations.",
-            request_body={"name": "openclaw", "scopes": ["*"]},
+            summary="Create a scoped API key for OpenClaw or local automations.",
+            request_body={"name": "openclaw", "scopes": ["platform:*", "nutrition:*", "training:*", "metrics:*", "insights:*", "assistant:use"]},
+        ),
+        AgentExample(
+            key="assistant-parse",
+            title="Draft from natural language",
+            method="POST",
+            path="/api/v1/assistant/parse",
+            summary="Turn a free-form fitness note into reviewable meal, weight, or workout drafts.",
+            request_body={"note": "Weighed 82.4 kg this morning and ate lunch for 650 kcal with 45P 60C 20F"},
         ),
     ],
     job_handlers={"platform.backup": backup_job},

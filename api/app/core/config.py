@@ -21,6 +21,9 @@ class Settings:
     local_ai_base_url: str | None
     local_ai_model: str
     local_ai_timeout_seconds: int
+    barcode_lookup_base_url: str
+    barcode_lookup_timeout_seconds: int
+    barcode_lookup_user_agent: str
     allow_origins: tuple[str, ...]
     agent_manifest_url: str
 
@@ -53,6 +56,9 @@ def get_settings() -> Settings:
         local_ai_base_url=os.getenv("FITNESSPAL_LOCAL_AI_BASE_URL"),
         local_ai_model=os.getenv("FITNESSPAL_LOCAL_AI_MODEL", "qwen3-vl:8b"),
         local_ai_timeout_seconds=int(os.getenv("FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS", "60")),
+        barcode_lookup_base_url=os.getenv("FITNESSPAL_BARCODE_LOOKUP_BASE_URL", "https://world.openfoodfacts.org"),
+        barcode_lookup_timeout_seconds=int(os.getenv("FITNESSPAL_BARCODE_LOOKUP_TIMEOUT_SECONDS", "10")),
+        barcode_lookup_user_agent=os.getenv("FITNESSPAL_BARCODE_LOOKUP_USER_AGENT", "FitnessPal/0.1.0"),
         allow_origins=_split_csv(os.getenv("FITNESSPAL_ALLOW_ORIGINS")),
         agent_manifest_url=os.getenv(
             "FITNESSPAL_AGENT_MANIFEST_URL",

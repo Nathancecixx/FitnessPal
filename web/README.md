@@ -26,12 +26,13 @@ It is a React single-page app optimized for:
 The frontend focuses on practical tracking:
 
 - quick dashboard actions
-- manual meal logging
+- manual meal logging plus barcode and label-photo imports
 - meal photo upload and draft review
-- fast workout logging
-- weight check-ins
+- fast workout logging with edit and repeat flows
+- weight check-ins with inline correction
 - template reuse
-- runtime and agent settings
+- assistant quick capture and runtime/agent settings
+- installable PWA basics for phone-first use
 
 The app is intentionally mobile-first, but still works well on larger screens.
 
@@ -43,7 +44,7 @@ The app is intentionally mobile-first, but still works well on larger screens.
 - TanStack Router
 - TanStack Query
 - Tailwind CSS
-- Apache ECharts via `echarts-for-react`
+- Apache ECharts core via a small local wrapper
 
 ## Routing and Screens
 
@@ -52,12 +53,12 @@ Defined in `src/router.tsx`.
 Routes:
 
 - `/` - dashboard and quick actions
-- `/nutrition` - food logging, photo logging, repeat meals, recipe tools
-- `/training` - workout logging, progression view, template shortcuts
-- `/weight` - weigh-ins and bodyweight trends
+- `/nutrition` - food logging, barcode and label imports, photo logging, repeat meals, recipe tools
+- `/training` - workout logging, progression view, edit/repeat shortcuts, template shortcuts
+- `/weight` - weigh-ins, inline editing, and bodyweight trends
 - `/templates` - meal and workout template management
 - `/insights` - coaching signals and snapshots
-- `/settings` - runtime inspection, exports, jobs, goals, and API keys
+- `/settings` - runtime inspection, exports, jobs, goals, and scoped API keys
 
 ## UI Principles
 
@@ -82,6 +83,7 @@ Examples of the current UX direction:
 ### Entry points
 
 - `src/main.tsx` mounts the app
+- `src/lib/pwa.ts` registers the production service worker
 - `src/router.tsx` defines routes
 - `src/components/layout/app-shell.tsx` owns login, shell layout, nav, and theme toggle
 
@@ -89,6 +91,7 @@ Examples of the current UX direction:
 
 - `src/components/ui.tsx` contains shared panels, form controls, empty states, and buttons
 - `src/components/cards/stat-card.tsx` contains dashboard stat cards and mini chart cards
+- `src/components/charts/echart.tsx` keeps the chart bundle limited to the ECharts modules the app actually uses
 
 ### Data access
 
@@ -166,6 +169,6 @@ docker compose up --build -d web
 
 ## Current Caveats
 
-- the frontend bundle still needs code splitting
-- some advanced flows exist on the backend before they are fully exposed in polished frontend workflows
+- charting still carries a meaningful runtime cost compared with the rest of the UI
+- some advanced backend workflows are exposed in a functional but still early polish state
 - this is a single-user app shell and does not attempt multi-user account management

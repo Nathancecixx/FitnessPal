@@ -97,24 +97,28 @@ def _coerce_value(column_type: Any, value: Any) -> Any:
 def restore_payload(session: Session, payload: dict[str, Any]) -> dict[str, int]:
     tables = payload.get("tables", {})
     counts: dict[str, int] = {}
-    for model in EXPORT_MODELS:
-        rows = tables.get(model.__tablename__, [])
-        counts[model.__tablename__] = 0
-        mapper = sa_inspect(model)
-        primary_keys = [column.key for column in mapper.primary_key]
-        for row in rows:
-            criteria = {key: row[key] for key in primary_keys if key in row}
-            existing = session.get(model, tuple(criteria.values()) if len(criteria) > 1 else next(iter(criteria.values()), None))
-            values = {
-                column.key: _coerce_value(column.type, row.get(column.key))
-                for column in mapper.columns
-                if column.key in row
-            }
-            if existing:
-                for key, value in values.items():
-                    setattr(existing, key, value)
-            else:
-                session.add(model(**values))
-            counts[model.__tablename__] += 1
+    try:
+        for model in EXPORT_MODELS:
+            rows = tables.get(model.__tablename__, [])
+            counts[model.__tablename__] = 0
+            mapper = sa_inspect(model)
+            primary_keys = [column.key for column in mapper.primary_key]
+            for row in rows:
+                criteria = {key: row[key] for key in primary_keys if key in row}
+                existing = session.get(model, tuple(criteria.values()) if len(criteria) > 1 else next(iter(criteria.values()), None))
+                values = {
+                    column.key: _coerce_value(column.type, row.get(column.key))
+                    for column in mapper.columns
+                    if column.key in row
+                }
+                if existing:
+                    for key, value in values.items():
+                        setattr(existing, key, value)
+                else:
+                    session.add(model(**values))
+                counts[model.__tablename__] += 1
         session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return counts

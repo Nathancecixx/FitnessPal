@@ -93,6 +93,8 @@ api/
 |  |  `- training.py
 |  |- main.py
 |  `- worker.py
+|- migrations/
+|- alembic.ini
 |- tests/
 |  `- test_logic.py
 |- Dockerfile
@@ -110,13 +112,17 @@ On startup, the FastAPI lifespan in `app/main.py` performs the following:
 4. loads all module manifests
 5. mounts module routers under the configured API prefix
 
-The default database initialization path is:
+The default database initialization path now runs an Alembic-backed schema check:
 
 ```python
-Base.metadata.create_all(bind=engine)
+ensure_schema_current()
 ```
 
-That makes local setup easy, but it also means schema evolution is not migration-managed yet.
+On startup the app will:
+
+- upgrade an empty database to the latest revision
+- stamp an existing pre-migration schema at `head`
+- apply any outstanding Alembic migrations
 
 ## Module System
 
@@ -150,6 +156,7 @@ This keeps the backend extensible without scattering domain registration logic a
 - `GET /api-keys`
 - `POST /api-keys`
 - `DELETE /api-keys/{key_id}`
+- `POST /assistant/parse`
 - `GET /exports`
 - `POST /exports`
 - `GET /exports/{export_id}/download`
@@ -160,6 +167,8 @@ This keeps the backend extensible without scattering domain registration logic a
 - `GET /foods`
 - `POST /foods`
 - `GET /foods/{food_id}`
+- `GET /foods/barcode-lookup/{barcode}`
+- `POST /foods/label-photo`
 - `GET /recipes`
 - `POST /recipes`
 - `GET /recipes/{recipe_id}`
@@ -169,6 +178,7 @@ This keeps the backend extensible without scattering domain registration logic a
 - `GET /meals`
 - `POST /meals`
 - `GET /meals/{meal_id}`
+- `PATCH /meals/{meal_id}`
 - `DELETE /meals/{meal_id}`
 - `GET /meal-photos`
 - `POST /meal-photos`
@@ -190,6 +200,7 @@ This keeps the backend extensible without scattering domain registration logic a
 - `GET /workout-sessions`
 - `POST /workout-sessions`
 - `GET /workout-sessions/{session_id}`
+- `PATCH /workout-sessions/{session_id}`
 - `DELETE /workout-sessions/{session_id}`
 
 ### Metrics routes
@@ -197,6 +208,7 @@ This keeps the backend extensible without scattering domain registration logic a
 - `GET /weight-entries`
 - `POST /weight-entries`
 - `GET /weight-entries/trends`
+- `PATCH /weight-entries/{entry_id}`
 - `DELETE /weight-entries/{entry_id}`
 
 ### Insights routes
@@ -228,6 +240,13 @@ Used by OpenClaw and other local agents.
 
 - create keys with `POST /api/v1/api-keys`
 - pass `Authorization: Bearer <token>`
+- use scoped keys such as `nutrition:*`, `training:write`, or `assistant:use`
+
+Scope matching supports:
+
+- exact scopes such as `metrics:read`
+- namespace wildcards such as `nutrition:*`
+- full control with `*`
 
 ### Bootstrap user
 
@@ -289,6 +308,9 @@ Environment variables supported by the backend:
 | `FITNESSPAL_LOCAL_AI_BASE_URL` | local AI endpoint | unset unless configured |
 | `FITNESSPAL_LOCAL_AI_MODEL` | local AI model name | `qwen3-vl:8b` |
 | `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | AI timeout | `60` in app defaults, `90` in Docker env examples |
+| `FITNESSPAL_BARCODE_LOOKUP_BASE_URL` | barcode lookup base URL | `https://world.openfoodfacts.org` |
+| `FITNESSPAL_BARCODE_LOOKUP_TIMEOUT_SECONDS` | barcode lookup timeout | `10` |
+| `FITNESSPAL_BARCODE_LOOKUP_USER_AGENT` | outbound barcode lookup user-agent | `FitnessPal/0.1.0` |
 | `FITNESSPAL_AGENT_MANIFEST_URL` | full agent manifest URL | `http://localhost:8080/.well-known/fitnesspal-agent.json` |
 
 Notes:
@@ -313,6 +335,7 @@ pip install -e .[dev]
 Run the API:
 
 ```bash
+python -m alembic upgrade head
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -339,11 +362,10 @@ python -m compileall app tests
 python -m unittest discover -s tests
 ```
 
-Current test coverage focuses on core nutrition math and progression logic.
+Current test coverage includes core nutrition math, progression logic, transaction boundaries, scope matching, edit flows, and restore rollback behavior.
 
 ## Current Caveats
 
-- schema evolution is not migration-managed yet
-- API key scopes are stored but not comprehensively enforced at route boundaries yet
-- route coverage in automated tests is still limited
+- route coverage is still limited compared with the full API surface
+- AI parsing and OCR workflows are still intentionally review-first
 - this backend is designed for a trusted local environment, not an untrusted internet-facing multi-user deployment

@@ -117,6 +117,7 @@ export function TrainingPage() {
     bodyweight_kg: '',
     blocks: [createSessionBlockDraft()],
   })
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
 
   const exercises = exercisesQuery.data?.items ?? []
   const sessions = sessionsQuery.data?.items ?? []
@@ -155,13 +156,18 @@ export function TrainingPage() {
     },
   })
 
-  const createSession = useMutation({
-    mutationFn: () => api.createWorkoutSession({
+  const saveSession = useMutation({
+    mutationFn: () => (editingSessionId ? api.updateWorkoutSession(editingSessionId, {
       notes: sessionDraft.notes || undefined,
       perceived_energy: sessionDraft.perceived_energy ? Number(sessionDraft.perceived_energy) : undefined,
       bodyweight_kg: sessionDraft.bodyweight_kg ? Number(sessionDraft.bodyweight_kg) : undefined,
       sets: expandBlocksToSets(sessionDraft.blocks),
-    }),
+    }) : api.createWorkoutSession({
+      notes: sessionDraft.notes || undefined,
+      perceived_energy: sessionDraft.perceived_energy ? Number(sessionDraft.perceived_energy) : undefined,
+      bodyweight_kg: sessionDraft.bodyweight_kg ? Number(sessionDraft.bodyweight_kg) : undefined,
+      sets: expandBlocksToSets(sessionDraft.blocks),
+    })),
     onSuccess: async () => {
       setSessionDraft({
         notes: '',
@@ -169,11 +175,32 @@ export function TrainingPage() {
         bodyweight_kg: '',
         blocks: [createSessionBlockDraft()],
       })
+      setEditingSessionId(null)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
         queryClient.invalidateQueries({ queryKey: ['exercise-progression'] }),
+      ])
+    },
+  })
+
+  const deleteSession = useMutation({
+    mutationFn: (sessionId: string) => api.deleteWorkoutSession(sessionId),
+    onSuccess: async (_, sessionId) => {
+      if (editingSessionId === sessionId) {
+        setEditingSessionId(null)
+        setSessionDraft({
+          notes: '',
+          perceived_energy: '',
+          bodyweight_kg: '',
+          blocks: [createSessionBlockDraft()],
+        })
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights'] }),
       ])
     },
   })
@@ -208,6 +235,7 @@ export function TrainingPage() {
 
   function applyTemplate(template: WorkoutTemplate) {
     const blocks = buildBlocksFromTemplate(template)
+    setEditingSessionId(null)
     setSessionDraft((current) => ({
       ...current,
       notes: template.name,
@@ -221,6 +249,7 @@ export function TrainingPage() {
 
   function repeatSession(session: WorkoutSession) {
     const blocks = buildBlocksFromSession(session)
+    setEditingSessionId(null)
     setSessionDraft((current) => ({
       ...current,
       notes: session.notes ?? 'Repeat session',
@@ -284,11 +313,11 @@ export function TrainingPage() {
                 className="space-y-4"
                 onSubmit={(event) => {
                   event.preventDefault()
-                  createSession.mutate()
+                  saveSession.mutate()
                 }}
               >
                 <LabelledInput
-                  label="Session label or notes"
+                  label={editingSessionId ? 'Session label or notes (editing)' : 'Session label or notes'}
                   value={sessionDraft.notes}
                   onChange={(value) => setSessionDraft((current) => ({ ...current, notes: value }))}
                   placeholder="Push day, hotel gym, short upper session"
@@ -352,7 +381,8 @@ export function TrainingPage() {
                   >
                     Copy last lift
                   </ActionButton>
-                  <ActionButton type="submit" className="w-full sm:w-auto">Log workout</ActionButton>
+                  <ActionButton type="submit" className="w-full sm:w-auto">{editingSessionId ? 'Save workout changes' : 'Log workout'}</ActionButton>
+                  {editingSessionId ? <ActionButton tone="secondary" onClick={() => { setEditingSessionId(null); setSessionDraft({ notes: '', perceived_energy: '', bodyweight_kg: '', blocks: [createSessionBlockDraft()] }) }} className="w-full sm:w-auto">Cancel edit</ActionButton> : null}
                 </div>
 
                 <details className="rounded-[22px] border border-slate-200 bg-white">
@@ -385,12 +415,7 @@ export function TrainingPage() {
           <Panel title="Recent workouts" subtitle="Check what you actually did without opening a dense history view.">
             <div className="space-y-3">
               {recentSessions.map((session) => (
-                <button
-                  key={session.id}
-                  type="button"
-                  className="w-full rounded-[24px] bg-slate-950 px-4 py-4 text-left text-canvas transition hover:bg-slate-900"
-                  onClick={() => repeatSession(session)}
-                >
+                <div key={session.id} className="rounded-[24px] bg-slate-950 px-4 py-4 text-canvas">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="font-display text-xl">{session.notes || 'Workout session'}</div>
@@ -401,7 +426,30 @@ export function TrainingPage() {
                   <div className="mt-3 text-sm text-slate-300">
                     {summarizeSession(session, exerciseNameById) || `${session.total_sets} working sets logged`}
                   </div>
-                </button>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <ActionButton tone="secondary" onClick={() => repeatSession(session)} className="w-auto">Repeat</ActionButton>
+                    <ActionButton
+                      tone="secondary"
+                      onClick={() => {
+                        setEditingSessionId(session.id)
+                        const blocks = buildBlocksFromSession(session)
+                        setSessionDraft({
+                          notes: session.notes ?? '',
+                          perceived_energy: session.perceived_energy != null ? String(session.perceived_energy) : '',
+                          bodyweight_kg: session.bodyweight_kg != null ? String(session.bodyweight_kg) : '',
+                          blocks: blocks.length ? blocks : [createSessionBlockDraft()],
+                        })
+                        if (blocks[0]?.exercise_id) {
+                          setSelectedExerciseId(blocks[0].exercise_id)
+                        }
+                      }}
+                      className="w-auto"
+                    >
+                      Edit
+                    </ActionButton>
+                    <ActionButton tone="secondary" onClick={() => deleteSession.mutate(session.id)} className="w-auto">Delete</ActionButton>
+                  </div>
+                </div>
               ))}
               {!recentSessions.length ? <EmptyState title="No workouts yet" body="The first log unlocks repeat-last-session shortcuts and better overload context." /> : null}
             </div>

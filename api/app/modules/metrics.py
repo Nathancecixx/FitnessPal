@@ -16,10 +16,12 @@ from app.core.logic import rolling_average, weight_trend_per_week
 from app.core.models import WeightEntry, utcnow
 from app.core.modules import ModuleManifest
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
-from app.core.security import Actor, get_actor
+from app.core.security import Actor, get_actor, require_scope
 
 
 router = APIRouter(route_class=IdempotentRoute, tags=["metrics"])
+metrics_read = require_scope("metrics:read")
+metrics_write = require_scope("metrics:write")
 
 
 class WeightEntryCreate(BaseModel):
@@ -30,8 +32,12 @@ class WeightEntryCreate(BaseModel):
     notes: str | None = None
 
 
+class WeightEntryUpdate(WeightEntryCreate):
+    pass
+
+
 @router.get("/weight-entries")
-def list_weight_entries(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def list_weight_entries(actor: Actor = Depends(metrics_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     rows = session.scalars(select(WeightEntry).where(WeightEntry.deleted_at.is_(None)).order_by(WeightEntry.logged_at.desc())).all()
     return {"items": [serialize_weight_entry(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
 
@@ -39,7 +45,7 @@ def list_weight_entries(actor: Actor = Depends(get_actor), session: Session = De
 @router.post("/weight-entries", status_code=status.HTTP_201_CREATED)
 def create_weight_entry(
     payload: WeightEntryCreate,
-    actor: Actor = Depends(get_actor),
+    actor: Actor = Depends(metrics_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = WeightEntry(
@@ -58,7 +64,7 @@ def create_weight_entry(
 
 
 @router.get("/weight-entries/trends")
-def get_weight_trends(actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def get_weight_trends(actor: Actor = Depends(metrics_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     rows = session.scalars(select(WeightEntry).where(WeightEntry.deleted_at.is_(None)).order_by(WeightEntry.logged_at.asc())).all()
     weights = [row.weight_kg for row in rows]
     trend_7 = rolling_average(weights, 7)
@@ -77,8 +83,29 @@ def get_weight_trends(actor: Actor = Depends(get_actor), session: Session = Depe
     }
 
 
+@router.patch("/weight-entries/{entry_id}")
+def update_weight_entry(
+    entry_id: str,
+    payload: WeightEntryUpdate,
+    actor: Actor = Depends(metrics_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = session.get(WeightEntry, entry_id)
+    if not row or row.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Weight entry not found.")
+    row.logged_at = payload.logged_at or row.logged_at
+    row.weight_kg = payload.weight_kg
+    row.body_fat_pct = payload.body_fat_pct
+    row.waist_cm = payload.waist_cm
+    row.notes = payload.notes
+    session.commit()
+    enqueue_job(session, "insights.recompute", {"source": "weight_update", "weight_entry_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    write_audit(session, actor, "weight_entry.updated", "weight_entry", row.id, payload.model_dump())
+    return serialize_weight_entry(row)
+
+
 @router.delete("/weight-entries/{entry_id}")
-def delete_weight_entry(entry_id: str, actor: Actor = Depends(get_actor), session: Session = Depends(get_session)) -> dict[str, Any]:
+def delete_weight_entry(entry_id: str, actor: Actor = Depends(metrics_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     row = session.get(WeightEntry, entry_id)
     if not row or row.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Weight entry not found.")

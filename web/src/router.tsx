@@ -1,13 +1,75 @@
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
+import { Suspense, lazy } from 'react'
 
 import { AppShell } from './components/layout/app-shell'
-import { DashboardPage } from './features/dashboard/dashboard-page'
-import { InsightsPage } from './features/insights/insights-page'
-import { NutritionPage } from './features/nutrition/nutrition-page'
-import { SettingsPage } from './features/settings/settings-page'
-import { TemplatesPage } from './features/templates/templates-page'
-import { TrainingPage } from './features/training/training-page'
-import { WeightPage } from './features/weight/weight-page'
+
+const LazyDashboardPage = lazy(async () => ({ default: (await import('./features/dashboard/dashboard-page')).DashboardPage }))
+const LazyNutritionPage = lazy(async () => ({ default: (await import('./features/nutrition/nutrition-page')).NutritionPage }))
+const LazyTrainingPage = lazy(async () => ({ default: (await import('./features/training/training-page')).TrainingPage }))
+const LazyWeightPage = lazy(async () => ({ default: (await import('./features/weight/weight-page')).WeightPage }))
+const LazyTemplatesPage = lazy(async () => ({ default: (await import('./features/templates/templates-page')).TemplatesPage }))
+const LazyInsightsPage = lazy(async () => ({ default: (await import('./features/insights/insights-page')).InsightsPage }))
+const LazySettingsPage = lazy(async () => ({ default: (await import('./features/settings/settings-page')).SettingsPage }))
+
+function LoadingFallback() {
+  return <div className="rounded-[24px] bg-white/80 px-4 py-8 text-center text-sm text-slate-500 shadow-halo">Loading page...</div>
+}
+
+function DashboardPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazyDashboardPage />
+    </Suspense>
+  )
+}
+
+function NutritionPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazyNutritionPage />
+    </Suspense>
+  )
+}
+
+function TrainingPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazyTrainingPage />
+    </Suspense>
+  )
+}
+
+function WeightPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazyWeightPage />
+    </Suspense>
+  )
+}
+
+function TemplatesPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazyTemplatesPage />
+    </Suspense>
+  )
+}
+
+function InsightsPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazyInsightsPage />
+    </Suspense>
+  )
+}
+
+function SettingsPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazySettingsPage />
+    </Suspense>
+  )
+}
 
 const rootRoute = createRootRoute({ component: AppShell })
 

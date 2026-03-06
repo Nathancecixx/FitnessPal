@@ -24,13 +24,25 @@ export type FoodItem = {
   id: string
   name: string
   brand?: string | null
+  serving_name?: string | null
   calories: number
   protein_g: number
   carbs_g: number
   fat_g: number
   fiber_g: number
+  sugar_g?: number
   sodium_mg: number
+  notes?: string | null
+  is_favorite?: boolean
   tags_json: string[]
+}
+
+export type FoodImportDraft = {
+  source: string
+  barcode?: string
+  provider?: string
+  model_name?: string
+  food: Omit<FoodItem, 'id' | 'tags_json'> & { notes?: string | null }
 }
 
 export type Recipe = {
@@ -278,6 +290,51 @@ export type RuntimeInfo = {
   requested_by: string
 }
 
+export type AssistantDraft =
+  | {
+      kind: 'meal_entry'
+      summary: string
+      payload: {
+        meal_type: string
+        notes?: string
+        source?: string
+        items: MealEntryItem[]
+      }
+    }
+  | {
+      kind: 'weight_entry'
+      summary: string
+      payload: {
+        weight_kg: number
+        body_fat_pct?: number | null
+        waist_cm?: number | null
+        notes?: string
+      }
+    }
+  | {
+      kind: 'workout_session'
+      summary: string
+      payload: {
+        notes?: string
+        exercise_name?: string
+        sets: Array<{
+          exercise_id?: string
+          exercise_label?: string
+          set_index: number
+          reps: number
+          load_kg: number
+          rir?: number | null
+        }>
+      }
+    }
+
+export type AssistantDraftResponse = {
+  drafts: AssistantDraft[]
+  warnings: string[]
+  provider?: string
+  model_name?: string
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -294,7 +351,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = await response.text()
-    throw new Error(errorBody || `Request failed with ${response.status}`)
+    try {
+      const parsed = JSON.parse(errorBody) as { detail?: string }
+      throw new Error(parsed.detail || `Request failed with ${response.status}`)
+    } catch {
+      throw new Error(errorBody || `Request failed with ${response.status}`)
+    }
   }
 
   return response.json() as Promise<T>
@@ -326,10 +388,18 @@ export const api = {
   listJobs: (status?: string) => request<{ items: JobRecord[]; total: number }>(`/jobs${status ? `?status=${encodeURIComponent(status)}` : ''}`),
   listFoods: (search?: string) => request<{ items: FoodItem[]; total: number }>(`/foods${search ? `?search=${encodeURIComponent(search)}` : ''}`),
   createFood: (payload: Partial<FoodItem> & { name: string }) => request<FoodItem>('/foods', { method: 'POST', body: JSON.stringify(payload) }),
+  lookupBarcode: (barcode: string) => request<FoodImportDraft>(`/foods/barcode-lookup/${encodeURIComponent(barcode)}`),
+  scanFoodLabel: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return upload<FoodImportDraft>('/foods/label-photo', formData)
+  },
   listRecipes: () => request<{ items: Recipe[]; total: number }>('/recipes'),
   createRecipe: (payload: Record<string, unknown>) => request<Recipe>('/recipes', { method: 'POST', body: JSON.stringify(payload) }),
   listMeals: () => request<{ items: MealEntry[]; total: number }>('/meals'),
   createMeal: (payload: Record<string, unknown>) => request<MealEntry>('/meals', { method: 'POST', body: JSON.stringify(payload) }),
+  updateMeal: (mealId: string, payload: Record<string, unknown>) => request<MealEntry>(`/meals/${mealId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteMeal: (mealId: string) => request<{ status: string; id: string }>(`/meals/${mealId}`, { method: 'DELETE' }),
   listMealTemplates: () => request<{ items: MealTemplate[]; total: number }>('/meal-templates'),
   createMealTemplate: (payload: Record<string, unknown>) => request<MealTemplate>('/meal-templates', { method: 'POST', body: JSON.stringify(payload) }),
   listMealPhotos: () => request<{ items: MealPhotoDraft[]; total: number }>('/meal-photos'),
@@ -347,20 +417,27 @@ export const api = {
   createWorkoutTemplate: (payload: Record<string, unknown>) => request<WorkoutTemplate>('/workout-templates', { method: 'POST', body: JSON.stringify(payload) }),
   listWorkoutSessions: () => request<{ items: WorkoutSession[]; total: number }>('/workout-sessions'),
   createWorkoutSession: (payload: Record<string, unknown>) => request<WorkoutSession>('/workout-sessions', { method: 'POST', body: JSON.stringify(payload) }),
+  updateWorkoutSession: (sessionId: string, payload: Record<string, unknown>) => request<WorkoutSession>(`/workout-sessions/${sessionId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteWorkoutSession: (sessionId: string) => request<{ status: string; id: string }>(`/workout-sessions/${sessionId}`, { method: 'DELETE' }),
   listWeightEntries: () => request<{ items: WeightEntry[]; total: number }>('/weight-entries'),
   getWeightTrends: () => request<{ points: WeightTrendPoint[]; weight_trend_kg_per_week: number }>('/weight-entries/trends'),
   createWeightEntry: (payload: Record<string, unknown>) => request<WeightEntry>('/weight-entries', { method: 'POST', body: JSON.stringify(payload) }),
+  updateWeightEntry: (entryId: string, payload: Record<string, unknown>) => request<WeightEntry>(`/weight-entries/${entryId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteWeightEntry: (entryId: string) => request<{ status: string; id: string }>(`/weight-entries/${entryId}`, { method: 'DELETE' }),
   getInsights: () => request<{ snapshot: InsightSnapshot }>('/insights'),
   recomputeInsights: () => request<{ snapshot: InsightSnapshot }>('/insights/recompute', { method: 'POST' }),
   listGoals: () => request<{ items: Goal[]; total: number }>('/goals'),
   createGoal: (payload: Record<string, unknown>) => request<Goal>('/goals', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteGoal: (goalId: string) => request<{ status: string; id: string }>(`/goals/${goalId}`, { method: 'DELETE' }),
   listApiKeys: () => request<{ items: ApiKeyRecord[]; total: number }>('/api-keys'),
   createApiKey: (payload: Record<string, unknown>) => request<ApiKeyRecord>('/api-keys', { method: 'POST', body: JSON.stringify(payload) }),
+  revokeApiKey: (keyId: string) => request<{ status: string; id: string }>(`/api-keys/${keyId}`, { method: 'DELETE' }),
   listExports: () => request<{ items: ExportRecord[]; total: number }>('/exports'),
   createExport: () => request<ExportRecord>('/exports', { method: 'POST' }),
   restoreExport: (payload: Record<string, unknown>) => request<{ status: string; counts: Record<string, number> }>('/exports/restore', {
     method: 'POST',
     body: JSON.stringify({ payload }),
   }),
+  parseAssistantNote: (note: string) => request<AssistantDraftResponse>('/assistant/parse', { method: 'POST', body: JSON.stringify({ note }) }),
   getAgentManifestUrl: () => (import.meta.env.VITE_AGENT_MANIFEST_URL ?? '/.well-known/fitnesspal-agent.json'),
 }
