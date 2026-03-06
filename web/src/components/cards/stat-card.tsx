@@ -4,18 +4,18 @@ import type { DashboardCard } from '../../lib/api'
 
 export function StatCard({ card }: { card: DashboardCard }) {
   const accent = {
-    amber: 'from-amber-300 via-orange-200 to-white',
-    sky: 'from-sky-300 via-cyan-200 to-white',
-    rose: 'from-rose-300 via-orange-100 to-white',
-    lime: 'from-lime-300 via-yellow-100 to-white',
-    emerald: 'from-emerald-300 via-teal-100 to-white',
-  }[card.accent] ?? 'from-slate-300 via-slate-100 to-white'
+    amber: 'dashboard-accent-amber',
+    sky: 'dashboard-accent-sky',
+    rose: 'dashboard-accent-rose',
+    lime: 'dashboard-accent-lime',
+    emerald: 'dashboard-accent-emerald',
+  }[card.accent] ?? 'dashboard-accent-neutral'
 
   return (
-    <div className={`rounded-[24px] border border-slate-200 bg-gradient-to-br ${accent} p-4 text-slate-950 shadow-halo md:rounded-[28px] md:p-5`}>
-      <div className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{card.title}</div>
-      <div className="mt-5 font-display text-3xl md:text-4xl">{card.value ?? '...'}</div>
-      <p className="mt-3 text-sm text-slate-700">{card.detail ?? card.description}</p>
+    <div className={`dashboard-stat-card ${accent} rounded-[24px] border border-slate-200 p-4 text-slate-950 shadow-halo md:rounded-[28px] md:p-5`}>
+      <div className="dashboard-stat-card-eyebrow text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{card.title}</div>
+      <div className="dashboard-stat-card-value mt-5 font-display text-3xl md:text-4xl">{card.value ?? '...'}</div>
+      <p className="dashboard-stat-card-copy mt-3 text-sm text-slate-700">{card.detail ?? card.description}</p>
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { api } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
@@ -15,7 +15,45 @@ const navItems = [
   { to: '/settings', label: 'Settings', hint: 'Agent keys and runtime' },
 ] as const
 
-function LoginScreen() {
+const THEME_STORAGE_KEY = 'fitnesspal-theme'
+
+type ThemeMode = 'light' | 'dark'
+
+function getInitialTheme(): ThemeMode {
+  if (typeof window === 'undefined') {
+    return 'light'
+  }
+
+  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY)
+  if (storedTheme === 'light' || storedTheme === 'dark') {
+    return storedTheme
+  }
+
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function ThemeToggle(props: { theme: ThemeMode; onToggle: () => void; className?: string }) {
+  const isDark = props.theme === 'dark'
+
+  return (
+    <button
+      type="button"
+      aria-label={`Switch to ${isDark ? 'light' : 'dark'} theme`}
+      className={`theme-toggle ${isDark ? 'theme-toggle-dark' : 'theme-toggle-light'} ${props.className ?? ''}`}
+      onClick={props.onToggle}
+    >
+      <span className="theme-toggle-labels" aria-hidden="true">
+        <span>Light</span>
+        <span>Dark</span>
+      </span>
+      <span className="theme-toggle-thumb" aria-hidden="true">
+        {isDark ? 'Dark' : 'Light'}
+      </span>
+    </button>
+  )
+}
+
+function LoginScreen(props: { theme: ThemeMode; onToggleTheme: () => void }) {
   const [username, setUsername] = useState('owner')
   const [password, setPassword] = useState('fitnesspal')
   const login = useMutation({
@@ -28,7 +66,10 @@ function LoginScreen() {
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-8">
       <div className="w-full max-w-md rounded-[32px] bg-slate-950/95 p-6 text-canvas shadow-halo backdrop-blur md:p-8">
-        <div className="text-[11px] uppercase tracking-[0.35em] text-amber-300/75">FitnessPal</div>
+        <div className="flex items-start justify-between gap-4">
+          <div className="text-[11px] uppercase tracking-[0.35em] text-amber-300/75">FitnessPal</div>
+          <ThemeToggle theme={props.theme} onToggle={props.onToggleTheme} />
+        </div>
         <h1 className="mt-4 font-display text-4xl leading-none">Phone-first local login</h1>
         <p className="mt-3 text-sm leading-6 text-slate-300">Sign in once on your phone, then handle everyday tracking from the bottom navigation and quick logging cards.</p>
         <form className="mt-6 grid gap-4" onSubmit={(event) => { event.preventDefault(); login.mutate() }}>
@@ -72,21 +113,28 @@ function MobileNav({ pathname }: { pathname: string }) {
 }
 
 export function AppShell() {
-  const [denseMode, setDenseMode] = useState(false)
+  const [theme, setTheme] = useState<ThemeMode>(getInitialTheme)
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession, retry: false })
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const currentItem = useMemo(() => navItems.find((item) => item.to === pathname) ?? navItems[0], [pathname])
+
+  useEffect(() => {
+    const root = document.documentElement
+    root.classList.toggle('theme-dark', theme === 'dark')
+    root.style.colorScheme = theme
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+  }, [theme])
 
   if (sessionQuery.isLoading) {
     return <div className="flex min-h-screen items-center justify-center font-display text-3xl text-slate-700">Booting FitnessPal...</div>
   }
 
   if (sessionQuery.isError) {
-    return <LoginScreen />
+    return <LoginScreen theme={theme} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} />
   }
 
   return (
-    <div className={`min-h-screen font-sans text-slate-900 ${denseMode ? 'tracking-tight' : ''}`}>
+    <div className="min-h-screen font-sans text-slate-900">
       <div className="mx-auto max-w-[1600px] lg:grid lg:min-h-screen lg:grid-cols-[260px_minmax(0,1fr)] lg:gap-4 lg:px-4 lg:py-4">
         <aside className="sticky top-4 hidden h-[calc(100vh-2rem)] self-start rounded-[32px] bg-slate-950/95 p-6 text-white shadow-halo backdrop-blur lg:flex lg:flex-col">
           <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
@@ -108,13 +156,6 @@ export function AppShell() {
               </Link>
             ))}
           </nav>
-
-          <div className="mt-auto rounded-[24px] border border-white/10 bg-white/5 p-4">
-            <div className="text-xs uppercase tracking-[0.25em] text-slate-400">View mode</div>
-            <button className="mt-3 w-full rounded-full bg-white px-4 py-3 text-sm font-semibold text-slate-950" onClick={() => setDenseMode((value) => !value)}>
-              {denseMode ? 'Use relaxed spacing' : 'Use dense spacing'}
-            </button>
-          </div>
         </aside>
 
         <div className="pb-24 lg:pb-0">
@@ -126,9 +167,7 @@ export function AppShell() {
                   <div className="mt-1 font-display text-3xl leading-none text-slate-950">{currentItem.label}</div>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{currentItem.hint}</p>
                 </div>
-                <button className="hidden rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-900 lg:inline-flex" onClick={() => setDenseMode((value) => !value)}>
-                  {denseMode ? 'Relax' : 'Dense'}
-                </button>
+                <ThemeToggle theme={theme} onToggle={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="shrink-0" />
               </div>
               <div className="mt-4 flex gap-2 overflow-x-auto lg:hidden">
                 {navItems.map((item) => (

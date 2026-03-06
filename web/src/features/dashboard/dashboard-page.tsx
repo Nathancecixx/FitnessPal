@@ -6,10 +6,10 @@ import { EmptyState, PageIntro, Panel } from '../../components/ui'
 import { api } from '../../lib/api'
 
 const quickActions = [
-  { to: '/nutrition', title: 'Log food', subtitle: 'Meal, photo, recipe, or template', accent: 'from-amber-300 via-orange-100 to-white' },
-  { to: '/training', title: 'Log workout', subtitle: 'Sets first, details second', accent: 'from-sky-300 via-cyan-100 to-white' },
-  { to: '/weight', title: 'Log weight', subtitle: 'Fast weigh-in with optional extras', accent: 'from-rose-300 via-orange-100 to-white' },
-  { to: '/templates', title: 'Use repeats', subtitle: 'Meals and sessions you do often', accent: 'from-lime-300 via-yellow-100 to-white' },
+  { to: '/nutrition', title: 'Log food', subtitle: 'Meal, photo, recipe, or template', accent: 'amber' },
+  { to: '/training', title: 'Log workout', subtitle: 'Sets first, details second', accent: 'sky' },
+  { to: '/weight', title: 'Log weight', subtitle: 'Fast weigh-in with optional extras', accent: 'rose' },
+  { to: '/templates', title: 'Use repeats', subtitle: 'Meals and sessions you do often', accent: 'lime' },
 ] as const
 
 export function DashboardPage() {
@@ -31,10 +31,14 @@ export function DashboardPage() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {quickActions.map((action) => (
-          <Link key={action.to} to={action.to} className={`rounded-[24px] border border-slate-200 bg-gradient-to-br ${action.accent} p-4 shadow-halo`}>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-600">Quick action</div>
-            <div className="mt-3 font-display text-2xl text-slate-950">{action.title}</div>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{action.subtitle}</p>
+          <Link
+            key={action.to}
+            to={action.to}
+            className={`dashboard-quick-action dashboard-accent-${action.accent} rounded-[24px] border border-slate-200 p-4 shadow-halo`}
+          >
+            <div className="dashboard-quick-action-eyebrow text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-600">Quick action</div>
+            <div className="dashboard-quick-action-title mt-3 font-display text-2xl text-slate-950">{action.title}</div>
+            <p className="dashboard-quick-action-copy mt-2 text-sm leading-6 text-slate-700">{action.subtitle}</p>
           </Link>
         ))}
       </div>
