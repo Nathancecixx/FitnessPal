@@ -18,6 +18,7 @@ def write_audit(
 ) -> None:
     session.add(
         AuditLog(
+            user_id=actor.user_id if actor else None,
             actor_type=actor.actor_type if actor else "system",
             actor_id=actor.actor_id if actor else None,
             action=action,

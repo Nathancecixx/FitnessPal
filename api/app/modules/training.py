@@ -13,20 +13,11 @@ from app.core.database import get_session
 from app.core.idempotency import IdempotentRoute
 from app.core.jobs import enqueue_job
 from app.core.logic import ProgressionContext, SetPerformance, recommend_progression
-from app.core.models import (
-    Exercise,
-    InsightSnapshot,
-    Routine,
-    RoutineExercise,
-    SetEntry,
-    WorkoutSession,
-    WorkoutTemplate,
-    WorkoutTemplateExercise,
-    utcnow,
-)
+from app.core.models import Exercise, InsightSnapshot, Routine, RoutineExercise, SetEntry, WorkoutSession, WorkoutTemplate, WorkoutTemplateExercise, utcnow
 from app.core.modules import ModuleManifest
+from app.core.ownership import ensure_owned
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
-from app.core.security import Actor, get_actor, require_scope
+from app.core.security import Actor, require_scope
 
 
 router = APIRouter(route_class=IdempotentRoute, tags=["training"])
@@ -112,7 +103,9 @@ class WorkoutSessionUpdate(WorkoutSessionCreate):
 
 @router.get("/exercises")
 def list_exercises(actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(Exercise).where(Exercise.deleted_at.is_(None)).order_by(Exercise.name.asc())).all()
+    rows = session.scalars(
+        select(Exercise).where(Exercise.user_id == actor.user_id, Exercise.deleted_at.is_(None)).order_by(Exercise.name.asc())
+    ).all()
     return {"items": [serialize_exercise(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
 
 
@@ -122,7 +115,7 @@ def create_exercise(
     actor: Actor = Depends(training_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = Exercise(**payload.model_dump())
+    row = Exercise(user_id=actor.user_id, **payload.model_dump())
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -132,24 +125,22 @@ def create_exercise(
 
 @router.get("/exercises/{exercise_id}")
 def get_exercise(exercise_id: str, actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(Exercise, exercise_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Exercise not found.")
+    row = ensure_owned(session, Exercise, exercise_id, actor.user_id, "Exercise not found.")
     return serialize_exercise(row)
 
 
 @router.get("/exercises/{exercise_id}/progression")
 def get_progression(exercise_id: str, actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    exercise = session.get(Exercise, exercise_id)
-    if not exercise or exercise.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Exercise not found.")
+    exercise = ensure_owned(session, Exercise, exercise_id, actor.user_id, "Exercise not found.")
     recent_sets = session.scalars(
         select(SetEntry)
-        .where(SetEntry.exercise_id == exercise.id, SetEntry.is_warmup.is_(False))
+        .where(SetEntry.user_id == actor.user_id, SetEntry.exercise_id == exercise.id, SetEntry.is_warmup.is_(False))
         .order_by(SetEntry.id.desc())
         .limit(6)
     ).all()
-    snapshot = session.scalars(select(InsightSnapshot).order_by(InsightSnapshot.created_at.desc()).limit(1)).first()
+    snapshot = session.scalars(
+        select(InsightSnapshot).where(InsightSnapshot.user_id == actor.user_id).order_by(InsightSnapshot.created_at.desc()).limit(1)
+    ).first()
     nutrition = snapshot.payload_json.get("nutrition", {}) if snapshot else {}
     body = snapshot.payload_json.get("body", {}) if snapshot else {}
     recommendation = recommend_progression(
@@ -174,7 +165,9 @@ def get_progression(exercise_id: str, actor: Actor = Depends(training_read), ses
 
 @router.get("/routines")
 def list_routines(actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(Routine).where(Routine.deleted_at.is_(None)).order_by(Routine.created_at.desc())).all()
+    rows = session.scalars(
+        select(Routine).where(Routine.user_id == actor.user_id, Routine.deleted_at.is_(None)).order_by(Routine.created_at.desc())
+    ).all()
     return {"items": [serialize_routine(session, row) for row in rows], "total": len(rows)}
 
 
@@ -184,14 +177,13 @@ def create_routine(
     actor: Actor = Depends(training_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = Routine(name=payload.name, goal=payload.goal, schedule_notes=payload.schedule_notes, notes=payload.notes)
+    row = Routine(user_id=actor.user_id, name=payload.name, goal=payload.goal, schedule_notes=payload.schedule_notes, notes=payload.notes)
     session.add(row)
     try:
         session.flush()
         for item in payload.items:
-            if not session.get(Exercise, item.exercise_id):
-                raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
-            session.add(RoutineExercise(routine_id=row.id, **item.model_dump()))
+            ensure_owned(session, Exercise, item.exercise_id, actor.user_id, f"Exercise {item.exercise_id} not found.")
+            session.add(RoutineExercise(user_id=actor.user_id, routine_id=row.id, **item.model_dump()))
         session.commit()
     except Exception:
         session.rollback()
@@ -202,7 +194,11 @@ def create_routine(
 
 @router.get("/workout-templates")
 def list_workout_templates(actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(WorkoutTemplate).where(WorkoutTemplate.deleted_at.is_(None)).order_by(WorkoutTemplate.created_at.desc())).all()
+    rows = session.scalars(
+        select(WorkoutTemplate)
+        .where(WorkoutTemplate.user_id == actor.user_id, WorkoutTemplate.deleted_at.is_(None))
+        .order_by(WorkoutTemplate.created_at.desc())
+    ).all()
     return {"items": [serialize_workout_template(session, row) for row in rows], "total": len(rows)}
 
 
@@ -212,16 +208,15 @@ def create_workout_template(
     actor: Actor = Depends(training_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    if payload.routine_id and not session.get(Routine, payload.routine_id):
-        raise HTTPException(status_code=404, detail="Routine not found.")
-    row = WorkoutTemplate(name=payload.name, routine_id=payload.routine_id, notes=payload.notes)
+    if payload.routine_id:
+        ensure_owned(session, Routine, payload.routine_id, actor.user_id, "Routine not found.")
+    row = WorkoutTemplate(user_id=actor.user_id, name=payload.name, routine_id=payload.routine_id, notes=payload.notes)
     session.add(row)
     try:
         session.flush()
         for item in payload.items:
-            if not session.get(Exercise, item.exercise_id):
-                raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
-            session.add(WorkoutTemplateExercise(workout_template_id=row.id, **item.model_dump()))
+            ensure_owned(session, Exercise, item.exercise_id, actor.user_id, f"Exercise {item.exercise_id} not found.")
+            session.add(WorkoutTemplateExercise(user_id=actor.user_id, workout_template_id=row.id, **item.model_dump()))
         session.commit()
     except Exception:
         session.rollback()
@@ -232,9 +227,7 @@ def create_workout_template(
 
 @router.get("/workout-templates/{template_id}")
 def get_workout_template(template_id: str, actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(WorkoutTemplate, template_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Workout template not found.")
+    row = ensure_owned(session, WorkoutTemplate, template_id, actor.user_id, "Workout template not found.")
     return serialize_workout_template(session, row)
 
 
@@ -246,7 +239,11 @@ def list_workout_sessions(
     date_to: datetime | None = Query(default=None),
     template_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    query = select(WorkoutSession).where(WorkoutSession.deleted_at.is_(None)).order_by(WorkoutSession.started_at.desc())
+    query = (
+        select(WorkoutSession)
+        .where(WorkoutSession.user_id == actor.user_id, WorkoutSession.deleted_at.is_(None))
+        .order_by(WorkoutSession.started_at.desc())
+    )
     conditions = []
     if date_from:
         conditions.append(WorkoutSession.started_at >= date_from)
@@ -267,21 +264,25 @@ def create_workout_session(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     try:
-        row = persist_workout_session(session, workout_session=None, payload=payload)
+        row = persist_workout_session(session, user_id=actor.user_id, workout_session=None, payload=payload)
         session.commit()
     except Exception:
         session.rollback()
         raise
-    enqueue_job(session, "insights.recompute", {"source": "workout", "workout_session_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "workout", "workout_session_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     write_audit(session, actor, "workout_session.created", "workout_session", row.id, payload.model_dump())
     return serialize_workout_session(session, row)
 
 
 @router.get("/workout-sessions/{session_id}")
 def get_workout_session(session_id: str, actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(WorkoutSession, session_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Workout session not found.")
+    row = ensure_owned(session, WorkoutSession, session_id, actor.user_id, "Workout session not found.")
     return serialize_workout_session(session, row)
 
 
@@ -292,28 +293,36 @@ def update_workout_session(
     actor: Actor = Depends(training_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = session.get(WorkoutSession, session_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Workout session not found.")
+    row = ensure_owned(session, WorkoutSession, session_id, actor.user_id, "Workout session not found.")
     try:
-        persist_workout_session(session, workout_session=row, payload=payload)
+        persist_workout_session(session, user_id=actor.user_id, workout_session=row, payload=payload)
         session.commit()
     except Exception:
         session.rollback()
         raise
-    enqueue_job(session, "insights.recompute", {"source": "workout_update", "workout_session_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "workout_update", "workout_session_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     write_audit(session, actor, "workout_session.updated", "workout_session", row.id, payload.model_dump())
     return serialize_workout_session(session, row)
 
 
 @router.delete("/workout-sessions/{session_id}")
 def delete_workout_session(session_id: str, actor: Actor = Depends(training_write), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(WorkoutSession, session_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Workout session not found.")
+    row = ensure_owned(session, WorkoutSession, session_id, actor.user_id, "Workout session not found.")
     row.deleted_at = utcnow()
     session.commit()
-    enqueue_job(session, "insights.recompute", {"source": "workout_delete", "workout_session_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "workout_delete", "workout_session_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     write_audit(session, actor, "workout_session.deleted", "workout_session", row.id, {"template_id": row.template_id})
     return {"status": "deleted", "id": row.id}
 
@@ -321,10 +330,17 @@ def delete_workout_session(session_id: str, actor: Actor = Depends(training_writ
 def persist_workout_session(
     session: Session,
     *,
+    user_id: str,
     workout_session: WorkoutSession | None,
     payload: WorkoutSessionCreate,
 ) -> WorkoutSession:
-    row = workout_session or WorkoutSession()
+    if payload.template_id:
+        ensure_owned(session, WorkoutTemplate, payload.template_id, user_id, "Workout template not found.")
+    if payload.routine_id:
+        ensure_owned(session, Routine, payload.routine_id, user_id, "Routine not found.")
+
+    row = workout_session or WorkoutSession(user_id=user_id)
+    row.user_id = user_id
     row.template_id = payload.template_id
     row.routine_id = payload.routine_id
     row.started_at = payload.started_at or row.started_at or utcnow()
@@ -335,7 +351,9 @@ def persist_workout_session(
     session.add(row)
     session.flush()
 
-    existing_sets = session.scalars(select(SetEntry).where(SetEntry.workout_session_id == row.id)).all()
+    existing_sets = session.scalars(
+        select(SetEntry).where(SetEntry.user_id == user_id, SetEntry.workout_session_id == row.id)
+    ).all()
     for existing in existing_sets:
         session.delete(existing)
     session.flush()
@@ -343,11 +361,12 @@ def persist_workout_session(
     total_volume = 0.0
     working_sets = 0
     for item in payload.sets:
-        exercise = session.get(Exercise, item.exercise_id)
-        if not exercise or exercise.deleted_at is not None:
-            raise HTTPException(status_code=404, detail=f"Exercise {item.exercise_id} not found.")
+        exercise = ensure_owned(session, Exercise, item.exercise_id, user_id, f"Exercise {item.exercise_id} not found.")
+        if item.template_exercise_id:
+            ensure_owned(session, WorkoutTemplateExercise, item.template_exercise_id, user_id, "Template exercise not found.")
         prior_max = session.scalar(
             select(func.max(SetEntry.load_kg)).where(
+                SetEntry.user_id == user_id,
                 SetEntry.exercise_id == exercise.id,
                 SetEntry.workout_session_id != row.id,
                 SetEntry.is_warmup.is_(False),
@@ -357,6 +376,7 @@ def persist_workout_session(
         progression_label = "warmup" if item.is_warmup else ("pr" if is_pr else "working")
         session.add(
             SetEntry(
+                user_id=user_id,
                 workout_session_id=row.id,
                 exercise_id=item.exercise_id,
                 template_exercise_id=item.template_exercise_id,
@@ -399,7 +419,11 @@ def serialize_exercise(row: Exercise) -> dict[str, Any]:
 
 
 def serialize_routine(session: Session, row: Routine) -> dict[str, Any]:
-    items = session.scalars(select(RoutineExercise).where(RoutineExercise.routine_id == row.id).order_by(RoutineExercise.order_index.asc())).all()
+    items = session.scalars(
+        select(RoutineExercise)
+        .where(RoutineExercise.user_id == row.user_id, RoutineExercise.routine_id == row.id)
+        .order_by(RoutineExercise.order_index.asc())
+    ).all()
     return {
         "id": row.id,
         "name": row.name,
@@ -410,7 +434,9 @@ def serialize_routine(session: Session, row: Routine) -> dict[str, Any]:
             {
                 "id": item.id,
                 "exercise_id": item.exercise_id,
-                "exercise_name": session.get(Exercise, item.exercise_id).name if session.get(Exercise, item.exercise_id) else None,
+                "exercise_name": session.get(Exercise, item.exercise_id).name
+                if session.get(Exercise, item.exercise_id) and session.get(Exercise, item.exercise_id).user_id == row.user_id
+                else None,
                 "day_label": item.day_label,
                 "order_index": item.order_index,
                 "target_sets": item.target_sets,
@@ -429,7 +455,7 @@ def serialize_template_exercise(session: Session, item: WorkoutTemplateExercise)
     return {
         "id": item.id,
         "exercise_id": item.exercise_id,
-        "exercise_name": exercise.name if exercise else None,
+        "exercise_name": exercise.name if exercise and exercise.user_id == item.user_id else None,
         "order_index": item.order_index,
         "target_sets": item.target_sets,
         "target_reps_min": item.target_reps_min,
@@ -441,7 +467,9 @@ def serialize_template_exercise(session: Session, item: WorkoutTemplateExercise)
 
 def serialize_workout_template(session: Session, row: WorkoutTemplate) -> dict[str, Any]:
     items = session.scalars(
-        select(WorkoutTemplateExercise).where(WorkoutTemplateExercise.workout_template_id == row.id).order_by(WorkoutTemplateExercise.order_index.asc())
+        select(WorkoutTemplateExercise)
+        .where(WorkoutTemplateExercise.user_id == row.user_id, WorkoutTemplateExercise.workout_template_id == row.id)
+        .order_by(WorkoutTemplateExercise.order_index.asc())
     ).all()
     return {
         "id": row.id,
@@ -472,7 +500,9 @@ def serialize_set(row: SetEntry) -> dict[str, Any]:
 
 
 def serialize_workout_session(session: Session, row: WorkoutSession) -> dict[str, Any]:
-    sets = session.scalars(select(SetEntry).where(SetEntry.workout_session_id == row.id).order_by(SetEntry.set_index.asc())).all()
+    sets = session.scalars(
+        select(SetEntry).where(SetEntry.user_id == row.user_id, SetEntry.workout_session_id == row.id).order_by(SetEntry.set_index.asc())
+    ).all()
     return {
         "id": row.id,
         "template_id": row.template_id,
@@ -488,8 +518,13 @@ def serialize_workout_session(session: Session, row: WorkoutSession) -> dict[str
     }
 
 
-def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
-    latest = session.scalars(select(WorkoutSession).where(WorkoutSession.deleted_at.is_(None)).order_by(WorkoutSession.started_at.desc()).limit(1)).first()
+def load_dashboard_cards(session: Session, actor: Actor) -> list[DashboardCardState]:
+    latest = session.scalars(
+        select(WorkoutSession)
+        .where(WorkoutSession.user_id == actor.user_id, WorkoutSession.deleted_at.is_(None))
+        .order_by(WorkoutSession.started_at.desc())
+        .limit(1)
+    ).first()
     return [
         DashboardCardState(
             key="last-workout-volume",

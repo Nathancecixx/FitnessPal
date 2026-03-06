@@ -108,7 +108,7 @@ On startup, the FastAPI lifespan in `app/main.py` performs the following:
 
 1. ensures storage directories exist
 2. initializes the database schema
-3. ensures the bootstrap user exists
+3. ensures the configured admin user exists
 4. loads all module manifests
 5. mounts module routers under the configured API prefix
 
@@ -145,8 +145,13 @@ This keeps the backend extensible without scattering domain registration logic a
 
 - `GET /health`
 - `POST /auth/login`
+- `POST /auth/password/setup`
+- `POST /auth/password/change`
 - `POST /auth/logout`
 - `GET /auth/session`
+- `GET /users`
+- `POST /users`
+- `POST /users/{user_id}/password-setup`
 - `GET /metrics`
 - `GET /runtime`
 - `GET /jobs`
@@ -248,12 +253,14 @@ Scope matching supports:
 - namespace wildcards such as `nutrition:*`
 - full control with `*`
 
-### Bootstrap user
+### Admin bootstrap and managed users
 
-If no user exists yet, the backend creates one automatically from:
+On startup the backend ensures the configured admin exists using:
 
-- `FITNESSPAL_BOOTSTRAP_USERNAME`
-- `FITNESSPAL_BOOTSTRAP_PASSWORD`
+- `FITNESSPAL_ADMIN_USERNAME`
+- `FITNESSPAL_ADMIN_PASSWORD`
+
+Admins can create additional users through the API. New users receive one-time password setup tokens and set their own passwords before first login.
 
 ### Password and token handling
 
@@ -300,8 +307,9 @@ Environment variables supported by the backend:
 | `FITNESSPAL_API_PREFIX` | API prefix | `/api/v1` |
 | `FITNESSPAL_DATABASE_URL` | SQLAlchemy database URL | `postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal` |
 | `FITNESSPAL_SQL_ECHO` | SQL echo logging | `false` |
-| `FITNESSPAL_BOOTSTRAP_USERNAME` | initial username | `owner` |
-| `FITNESSPAL_BOOTSTRAP_PASSWORD` | initial password | `fitnesspal` |
+| `FITNESSPAL_ADMIN_USERNAME` | bootstrap admin username | `owner` |
+| `FITNESSPAL_ADMIN_PASSWORD` | bootstrap admin password | `fitnesspal` |
+| `FITNESSPAL_PASSWORD_SETUP_HOURS` | one-time password setup token lifetime | `72` |
 | `FITNESSPAL_SESSION_DAYS` | session duration | `30` |
 | `FITNESSPAL_STORAGE_ROOT` | local storage root | `storage` |
 | `FITNESSPAL_ALLOW_ORIGINS` | CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173` plus deployment overrides |
@@ -368,4 +376,4 @@ Current test coverage includes core nutrition math, progression logic, transacti
 
 - route coverage is still limited compared with the full API surface
 - AI parsing and OCR workflows are still intentionally review-first
-- this backend is designed for a trusted local environment, not an untrusted internet-facing multi-user deployment
+- this backend is designed for trusted local or LAN users, not an untrusted internet-facing self-signup deployment

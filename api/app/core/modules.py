@@ -8,9 +8,10 @@ from fastapi import APIRouter
 from sqlalchemy.orm import Session
 
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
+from app.core.security import Actor
 
 
-DashboardLoader = Callable[[Session], Sequence[DashboardCardState]]
+DashboardLoader = Callable[[Session, Actor], Sequence[DashboardCardState]]
 JobHandler = Callable[[Session, dict[str, Any]], dict[str, Any] | None]
 
 

@@ -17,20 +17,11 @@ from app.core.idempotency import IdempotentRoute
 from app.core.jobs import enqueue_job
 from app.core.local_ai import analyze_meal_photo, analyze_nutrition_label
 from app.core.logic import MacroProfile, aggregate_macros, recipe_per_serving, scale_macros
-from app.core.models import (
-    FoodItem,
-    MealEntry,
-    MealEntryItem,
-    MealTemplate,
-    MealTemplateItem,
-    PhotoAnalysisDraft,
-    Recipe,
-    RecipeItem,
-    utcnow,
-)
+from app.core.models import FoodItem, MealEntry, MealEntryItem, MealTemplate, MealTemplateItem, PhotoAnalysisDraft, Recipe, RecipeItem, utcnow
 from app.core.modules import ModuleManifest
+from app.core.ownership import ensure_owned
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
-from app.core.security import Actor, get_actor, require_scope
+from app.core.security import Actor, require_scope
 from app.core.storage import save_upload
 
 
@@ -118,7 +109,11 @@ def list_foods(
     session: Session = Depends(get_session),
     search: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    query = select(FoodItem).where(FoodItem.deleted_at.is_(None)).order_by(FoodItem.name.asc())
+    query = (
+        select(FoodItem)
+        .where(FoodItem.user_id == actor.user_id, FoodItem.deleted_at.is_(None))
+        .order_by(FoodItem.name.asc())
+    )
     if search:
         query = query.where(or_(FoodItem.name.ilike(f"%{search}%"), FoodItem.brand.ilike(f"%{search}%")))
     rows = session.scalars(query).all()
@@ -131,7 +126,7 @@ def create_food(
     actor: Actor = Depends(nutrition_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = FoodItem(**payload.model_dump())
+    row = FoodItem(user_id=actor.user_id, **payload.model_dump())
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -141,9 +136,7 @@ def create_food(
 
 @router.get("/foods/{food_id}")
 def get_food(food_id: str, actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(FoodItem, food_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Food not found.")
+    row = ensure_owned(session, FoodItem, food_id, actor.user_id, "Food not found.")
     return serialize_food(row)
 
 
@@ -163,7 +156,7 @@ def scan_food_label(
     actor: Actor = Depends(nutrition_read),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    target = save_upload(file)
+    target = save_upload(file, actor.user_id, subdir="label-photos")
     try:
         result = analyze_nutrition_label(target)
     except RuntimeError as exc:
@@ -176,7 +169,9 @@ def scan_food_label(
 
 @router.get("/recipes")
 def list_recipes(actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(Recipe).where(Recipe.deleted_at.is_(None)).order_by(Recipe.created_at.desc())).all()
+    rows = session.scalars(
+        select(Recipe).where(Recipe.user_id == actor.user_id, Recipe.deleted_at.is_(None)).order_by(Recipe.created_at.desc())
+    ).all()
     return {"items": [serialize_recipe(session, row) for row in rows], "total": len(rows)}
 
 
@@ -187,6 +182,7 @@ def create_recipe(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = Recipe(
+        user_id=actor.user_id,
         name=payload.name,
         servings=payload.servings,
         instructions_json=payload.instructions_json,
@@ -197,9 +193,8 @@ def create_recipe(
     try:
         session.flush()
         for item in payload.items:
-            if not session.get(FoodItem, item.food_id):
-                raise HTTPException(status_code=404, detail=f"Food {item.food_id} not found.")
-            session.add(RecipeItem(recipe_id=row.id, food_id=item.food_id, grams=item.grams))
+            ensure_owned(session, FoodItem, item.food_id, actor.user_id, f"Food {item.food_id} not found.")
+            session.add(RecipeItem(user_id=actor.user_id, recipe_id=row.id, food_id=item.food_id, grams=item.grams))
         session.commit()
     except Exception:
         session.rollback()
@@ -211,15 +206,17 @@ def create_recipe(
 
 @router.get("/recipes/{recipe_id}")
 def get_recipe(recipe_id: str, actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(Recipe, recipe_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Recipe not found.")
+    row = ensure_owned(session, Recipe, recipe_id, actor.user_id, "Recipe not found.")
     return serialize_recipe(session, row)
 
 
 @router.get("/meal-templates")
 def list_meal_templates(actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(MealTemplate).where(MealTemplate.deleted_at.is_(None)).order_by(MealTemplate.created_at.desc())).all()
+    rows = session.scalars(
+        select(MealTemplate)
+        .where(MealTemplate.user_id == actor.user_id, MealTemplate.deleted_at.is_(None))
+        .order_by(MealTemplate.created_at.desc())
+    ).all()
     return {"items": [serialize_meal_template(session, row) for row in rows], "total": len(rows)}
 
 
@@ -229,13 +226,19 @@ def create_meal_template(
     actor: Actor = Depends(nutrition_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = MealTemplate(name=payload.name, meal_type=payload.meal_type, notes=payload.notes, tags_json=payload.tags_json)
+    row = MealTemplate(
+        user_id=actor.user_id,
+        name=payload.name,
+        meal_type=payload.meal_type,
+        notes=payload.notes,
+        tags_json=payload.tags_json,
+    )
     session.add(row)
     try:
         session.flush()
         for item in payload.items:
-            normalized = normalize_meal_item(session, item)
-            session.add(MealTemplateItem(meal_template_id=row.id, **normalized))
+            normalized = normalize_meal_item(session, item, actor.user_id)
+            session.add(MealTemplateItem(user_id=actor.user_id, meal_template_id=row.id, **normalized))
         session.commit()
     except Exception:
         session.rollback()
@@ -247,9 +250,7 @@ def create_meal_template(
 
 @router.get("/meal-templates/{template_id}")
 def get_meal_template(template_id: str, actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(MealTemplate, template_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Meal template not found.")
+    row = ensure_owned(session, MealTemplate, template_id, actor.user_id, "Meal template not found.")
     return serialize_meal_template(session, row)
 
 
@@ -262,7 +263,11 @@ def list_meals(
     meal_type: str | None = Query(default=None),
     template_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    query = select(MealEntry).where(MealEntry.deleted_at.is_(None)).order_by(MealEntry.logged_at.desc())
+    query = (
+        select(MealEntry)
+        .where(MealEntry.user_id == actor.user_id, MealEntry.deleted_at.is_(None))
+        .order_by(MealEntry.logged_at.desc())
+    )
     conditions = []
     if date_from:
         conditions.append(MealEntry.logged_at >= date_from)
@@ -284,10 +289,11 @@ def create_meal(
     actor: Actor = Depends(nutrition_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    items = expand_meal_payload(session, payload)
+    items = expand_meal_payload(session, payload, actor.user_id)
     try:
         row = persist_meal_entry(
             session,
+            user_id=actor.user_id,
             meal=None,
             items=items,
             logged_at=payload.logged_at or utcnow(),
@@ -303,16 +309,20 @@ def create_meal(
         session.rollback()
         raise
     session.refresh(row)
-    enqueue_job(session, "insights.recompute", {"source": "meal", "meal_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "meal", "meal_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     write_audit(session, actor, "meal.created", "meal", row.id, payload.model_dump())
     return serialize_meal(session, row)
 
 
 @router.get("/meals/{meal_id}")
 def get_meal(meal_id: str, actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(MealEntry, meal_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Meal not found.")
+    row = ensure_owned(session, MealEntry, meal_id, actor.user_id, "Meal not found.")
     return serialize_meal(session, row)
 
 
@@ -323,13 +333,12 @@ def update_meal(
     actor: Actor = Depends(nutrition_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = session.get(MealEntry, meal_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Meal not found.")
-    items = expand_meal_payload(session, payload)
+    row = ensure_owned(session, MealEntry, meal_id, actor.user_id, "Meal not found.")
+    items = expand_meal_payload(session, payload, actor.user_id)
     try:
         persist_meal_entry(
             session,
+            user_id=actor.user_id,
             meal=row,
             items=items,
             logged_at=payload.logged_at or row.logged_at,
@@ -347,25 +356,37 @@ def update_meal(
         session.rollback()
         raise
     write_audit(session, actor, "meal.updated", "meal", row.id, payload.model_dump())
-    enqueue_job(session, "insights.recompute", {"source": "meal_update", "meal_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "meal_update", "meal_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     return serialize_meal(session, row)
 
 
 @router.delete("/meals/{meal_id}")
 def delete_meal(meal_id: str, actor: Actor = Depends(nutrition_write), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(MealEntry, meal_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Meal not found.")
+    row = ensure_owned(session, MealEntry, meal_id, actor.user_id, "Meal not found.")
     row.deleted_at = utcnow()
     session.commit()
     write_audit(session, actor, "meal.deleted", "meal", row.id, {"meal_type": row.meal_type})
-    enqueue_job(session, "insights.recompute", {"source": "meal_delete", "meal_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "meal_delete", "meal_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     return {"status": "deleted", "id": row.id}
 
 
 @router.get("/meal-photos")
 def list_meal_photos(actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(PhotoAnalysisDraft).order_by(PhotoAnalysisDraft.created_at.desc())).all()
+    rows = session.scalars(
+        select(PhotoAnalysisDraft).where(PhotoAnalysisDraft.user_id == actor.user_id).order_by(PhotoAnalysisDraft.created_at.desc())
+    ).all()
     return {"items": [serialize_photo_draft(row) for row in rows], "total": len(rows)}
 
 
@@ -375,33 +396,41 @@ def upload_meal_photo(
     actor: Actor = Depends(nutrition_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    target = save_upload(file)
-    draft = PhotoAnalysisDraft(status="queued", source_path=str(target))
+    target = save_upload(file, actor.user_id)
+    draft = PhotoAnalysisDraft(user_id=actor.user_id, status="queued", source_path=str(target))
     session.add(draft)
     session.commit()
     session.refresh(draft)
-    enqueue_job(session, "nutrition.analyze_photo", {"draft_id": draft.id}, dedupe_key=f"photo:{draft.id}")
+    enqueue_job(
+        session,
+        "nutrition.analyze_photo",
+        actor.user_id,
+        {"draft_id": draft.id, "user_id": actor.user_id},
+        dedupe_key=f"photo:{actor.user_id}:{draft.id}",
+    )
     write_audit(session, actor, "meal_photo.created", "meal_photo", draft.id, {"path": str(target)})
     return serialize_photo_draft(draft)
 
 
 @router.post("/meal-photos/{draft_id}/analyze")
 def rerun_photo_analysis(draft_id: str, actor: Actor = Depends(nutrition_write), session: Session = Depends(get_session)) -> dict[str, Any]:
-    draft = session.get(PhotoAnalysisDraft, draft_id)
-    if not draft:
-        raise HTTPException(status_code=404, detail="Meal photo draft not found.")
+    draft = ensure_owned(session, PhotoAnalysisDraft, draft_id, actor.user_id, "Meal photo draft not found.", include_deleted=True)
     draft.status = "queued"
     draft.error_message = None
     session.commit()
-    enqueue_job(session, "nutrition.analyze_photo", {"draft_id": draft.id}, dedupe_key=f"photo-rerun:{draft.id}:{utcnow().strftime('%Y%m%d%H%M%S')}")
+    enqueue_job(
+        session,
+        "nutrition.analyze_photo",
+        actor.user_id,
+        {"draft_id": draft.id, "user_id": actor.user_id},
+        dedupe_key=f"photo-rerun:{actor.user_id}:{draft.id}:{utcnow().strftime('%Y%m%d%H%M%S')}",
+    )
     return serialize_photo_draft(draft)
 
 
 @router.get("/meal-photos/{draft_id}")
 def get_meal_photo(draft_id: str, actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    draft = session.get(PhotoAnalysisDraft, draft_id)
-    if not draft:
-        raise HTTPException(status_code=404, detail="Meal photo draft not found.")
+    draft = ensure_owned(session, PhotoAnalysisDraft, draft_id, actor.user_id, "Meal photo draft not found.", include_deleted=True)
     return serialize_photo_draft(draft)
 
 
@@ -412,14 +441,13 @@ def confirm_meal_photo(
     actor: Actor = Depends(nutrition_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    draft = session.get(PhotoAnalysisDraft, draft_id)
-    if not draft:
-        raise HTTPException(status_code=404, detail="Meal photo draft not found.")
+    draft = ensure_owned(session, PhotoAnalysisDraft, draft_id, actor.user_id, "Meal photo draft not found.", include_deleted=True)
     item_payloads = payload.items if payload.items is not None else [MealItemInput(**item) for item in draft.candidates_json]
-    items = [normalize_meal_item(session, item) for item in item_payloads]
+    items = [normalize_meal_item(session, item, actor.user_id) for item in item_payloads]
     try:
         meal = persist_meal_entry(
             session,
+            user_id=actor.user_id,
             meal=None,
             items=items,
             logged_at=utcnow(),
@@ -436,16 +464,20 @@ def confirm_meal_photo(
     except Exception:
         session.rollback()
         raise
-    enqueue_job(session, "insights.recompute", {"source": "meal_photo", "meal_id": meal.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "meal_photo", "meal_id": meal.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     write_audit(session, actor, "meal_photo.confirmed", "meal_photo", draft.id, {"meal_id": meal.id})
     return serialize_meal(session, meal)
 
 
-def normalize_meal_item(session: Session, payload: MealItemInput) -> dict[str, Any]:
+def normalize_meal_item(session: Session, payload: MealItemInput, user_id: str) -> dict[str, Any]:
     if payload.food_id:
-        food = session.get(FoodItem, payload.food_id)
-        if not food or food.deleted_at is not None:
-            raise HTTPException(status_code=404, detail=f"Food {payload.food_id} not found.")
+        food = ensure_owned(session, FoodItem, payload.food_id, user_id, f"Food {payload.food_id} not found.")
         profile = scale_macros(
             MacroProfile(
                 calories=food.calories,
@@ -484,28 +516,35 @@ def normalize_meal_item(session: Session, payload: MealItemInput) -> dict[str, A
     }
 
 
-def expand_meal_payload(session: Session, payload: MealCreate) -> list[dict[str, Any]]:
+def expand_meal_payload(session: Session, payload: MealCreate, user_id: str) -> list[dict[str, Any]]:
     if payload.items:
-        return [normalize_meal_item(session, item) for item in payload.items]
+        return [normalize_meal_item(session, item, user_id) for item in payload.items]
     if payload.template_id:
-        items = session.scalars(select(MealTemplateItem).where(MealTemplateItem.meal_template_id == payload.template_id)).all()
+        ensure_owned(session, MealTemplate, payload.template_id, user_id, "Meal template not found.")
+        items = session.scalars(
+            select(MealTemplateItem).where(
+                MealTemplateItem.user_id == user_id,
+                MealTemplateItem.meal_template_id == payload.template_id,
+            )
+        ).all()
         if not items:
             raise HTTPException(status_code=404, detail="Meal template not found or empty.")
         return [serialize_template_item(item) for item in items]
     if payload.recipe_id:
-        recipe = session.get(Recipe, payload.recipe_id)
-        if not recipe or recipe.deleted_at is not None:
-            raise HTTPException(status_code=404, detail="Recipe not found.")
-        recipe_items = session.scalars(select(RecipeItem).where(RecipeItem.recipe_id == recipe.id)).all()
+        recipe = ensure_owned(session, Recipe, payload.recipe_id, user_id, "Recipe not found.")
+        recipe_items = session.scalars(
+            select(RecipeItem).where(RecipeItem.user_id == user_id, RecipeItem.recipe_id == recipe.id)
+        ).all()
         normalized: list[dict[str, Any]] = []
         for item in recipe_items:
             food = session.get(FoodItem, item.food_id)
-            if not food or food.deleted_at is not None:
+            if not food or food.user_id != user_id or food.deleted_at is not None:
                 continue
             normalized.append(
                 normalize_meal_item(
                     session,
                     MealItemInput(food_id=food.id, label=food.name, grams=item.grams, source_type="recipe"),
+                    user_id,
                 )
             )
         return normalized
@@ -515,6 +554,7 @@ def expand_meal_payload(session: Session, payload: MealCreate) -> list[dict[str,
 def persist_meal_entry(
     session: Session,
     *,
+    user_id: str,
     meal: MealEntry | None,
     items: list[dict[str, Any]],
     logged_at: datetime,
@@ -528,7 +568,8 @@ def persist_meal_entry(
     ai_confidence: float | None = None,
 ) -> MealEntry:
     totals = aggregate_macros([item_to_profile(item) for item in items])
-    row = meal or MealEntry()
+    row = meal or MealEntry(user_id=user_id)
+    row.user_id = user_id
     row.logged_at = logged_at
     row.meal_type = meal_type
     row.source = source
@@ -547,13 +588,15 @@ def persist_meal_entry(
     session.add(row)
     session.flush()
 
-    existing_items = session.scalars(select(MealEntryItem).where(MealEntryItem.meal_entry_id == row.id)).all()
+    existing_items = session.scalars(
+        select(MealEntryItem).where(MealEntryItem.user_id == user_id, MealEntryItem.meal_entry_id == row.id)
+    ).all()
     for existing in existing_items:
         session.delete(existing)
     session.flush()
 
     for item in items:
-        session.add(MealEntryItem(meal_entry_id=row.id, **item))
+        session.add(MealEntryItem(user_id=user_id, meal_entry_id=row.id, **item))
     return row
 
 
@@ -589,12 +632,14 @@ def serialize_food(row: FoodItem) -> dict[str, Any]:
 
 
 def serialize_recipe(session: Session, row: Recipe) -> dict[str, Any]:
-    items = session.scalars(select(RecipeItem).where(RecipeItem.recipe_id == row.id)).all()
+    items = session.scalars(
+        select(RecipeItem).where(RecipeItem.user_id == row.user_id, RecipeItem.recipe_id == row.id)
+    ).all()
     macro_items: list[MacroProfile] = []
     serialized_items = []
     for item in items:
         food = session.get(FoodItem, item.food_id)
-        if not food or food.deleted_at is not None:
+        if not food or food.user_id != row.user_id or food.deleted_at is not None:
             continue
         profile = scale_macros(
             MacroProfile(
@@ -608,13 +653,15 @@ def serialize_recipe(session: Session, row: Recipe) -> dict[str, Any]:
             item.grams,
         )
         macro_items.append(profile)
-        serialized_items.append({
-            "id": item.id,
-            "food_id": food.id,
-            "food_name": food.name,
-            "grams": item.grams,
-            "macros": macro_profile_to_dict(profile),
-        })
+        serialized_items.append(
+            {
+                "id": item.id,
+                "food_id": food.id,
+                "food_name": food.name,
+                "grams": item.grams,
+                "macros": macro_profile_to_dict(profile),
+            }
+        )
     per_serving = recipe_per_serving(macro_items, row.servings)
     return {
         "id": row.id,
@@ -645,7 +692,9 @@ def serialize_template_item(item: MealTemplateItem) -> dict[str, Any]:
 
 
 def serialize_meal_template(session: Session, row: MealTemplate) -> dict[str, Any]:
-    items = session.scalars(select(MealTemplateItem).where(MealTemplateItem.meal_template_id == row.id)).all()
+    items = session.scalars(
+        select(MealTemplateItem).where(MealTemplateItem.user_id == row.user_id, MealTemplateItem.meal_template_id == row.id)
+    ).all()
     totals = aggregate_macros([item_to_profile(serialize_template_item(item)) for item in items])
     return {
         "id": row.id,
@@ -660,7 +709,9 @@ def serialize_meal_template(session: Session, row: MealTemplate) -> dict[str, An
 
 
 def serialize_meal(session: Session, row: MealEntry) -> dict[str, Any]:
-    items = session.scalars(select(MealEntryItem).where(MealEntryItem.meal_entry_id == row.id)).all()
+    items = session.scalars(
+        select(MealEntryItem).where(MealEntryItem.user_id == row.user_id, MealEntryItem.meal_entry_id == row.id)
+    ).all()
     return {
         "id": row.id,
         "logged_at": row.logged_at.isoformat(),
@@ -725,9 +776,11 @@ def serialize_photo_draft(row: PhotoAnalysisDraft) -> dict[str, Any]:
     }
 
 
-def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
+def load_dashboard_cards(session: Session, actor: Actor) -> list[DashboardCardState]:
     today = utcnow().date()
-    meals = session.scalars(select(MealEntry).where(MealEntry.deleted_at.is_(None))).all()
+    meals = session.scalars(
+        select(MealEntry).where(MealEntry.user_id == actor.user_id, MealEntry.deleted_at.is_(None))
+    ).all()
     today_meals = [meal for meal in meals if meal.logged_at.date() == today]
     calories = sum(meal.total_calories for meal in today_meals)
     return [
@@ -745,9 +798,8 @@ def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
 
 
 def analyze_photo_job(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
-    draft = session.get(PhotoAnalysisDraft, payload["draft_id"])
-    if not draft:
-        raise ValueError("Photo draft not found.")
+    user_id = str(payload["user_id"])
+    draft = ensure_owned(session, PhotoAnalysisDraft, payload["draft_id"], user_id, "Photo draft not found.", include_deleted=True)
     try:
         draft.status = "processing"
         draft.error_message = None
@@ -829,5 +881,3 @@ manifest = ModuleManifest(
     ],
     job_handlers={"nutrition.analyze_photo": analyze_photo_job},
 )
-
-

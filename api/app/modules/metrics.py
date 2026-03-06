@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,8 +15,9 @@ from app.core.jobs import enqueue_job
 from app.core.logic import rolling_average, weight_trend_per_week
 from app.core.models import WeightEntry, utcnow
 from app.core.modules import ModuleManifest
+from app.core.ownership import ensure_owned
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
-from app.core.security import Actor, get_actor, require_scope
+from app.core.security import Actor, require_scope
 
 
 router = APIRouter(route_class=IdempotentRoute, tags=["metrics"])
@@ -38,7 +39,11 @@ class WeightEntryUpdate(WeightEntryCreate):
 
 @router.get("/weight-entries")
 def list_weight_entries(actor: Actor = Depends(metrics_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(WeightEntry).where(WeightEntry.deleted_at.is_(None)).order_by(WeightEntry.logged_at.desc())).all()
+    rows = session.scalars(
+        select(WeightEntry)
+        .where(WeightEntry.user_id == actor.user_id, WeightEntry.deleted_at.is_(None))
+        .order_by(WeightEntry.logged_at.desc())
+    ).all()
     return {"items": [serialize_weight_entry(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
 
 
@@ -49,6 +54,7 @@ def create_weight_entry(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = WeightEntry(
+        user_id=actor.user_id,
         logged_at=payload.logged_at or utcnow(),
         weight_kg=payload.weight_kg,
         body_fat_pct=payload.body_fat_pct,
@@ -58,14 +64,24 @@ def create_weight_entry(
     session.add(row)
     session.commit()
     session.refresh(row)
-    enqueue_job(session, "insights.recompute", {"source": "weight", "weight_entry_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "weight", "weight_entry_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     write_audit(session, actor, "weight_entry.created", "weight_entry", row.id, payload.model_dump())
     return serialize_weight_entry(row)
 
 
 @router.get("/weight-entries/trends")
 def get_weight_trends(actor: Actor = Depends(metrics_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(WeightEntry).where(WeightEntry.deleted_at.is_(None)).order_by(WeightEntry.logged_at.asc())).all()
+    rows = session.scalars(
+        select(WeightEntry)
+        .where(WeightEntry.user_id == actor.user_id, WeightEntry.deleted_at.is_(None))
+        .order_by(WeightEntry.logged_at.asc())
+    ).all()
     weights = [row.weight_kg for row in rows]
     trend_7 = rolling_average(weights, 7)
     trend_30 = rolling_average(weights, 30)
@@ -90,28 +106,36 @@ def update_weight_entry(
     actor: Actor = Depends(metrics_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = session.get(WeightEntry, entry_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Weight entry not found.")
+    row = ensure_owned(session, WeightEntry, entry_id, actor.user_id, "Weight entry not found.")
     row.logged_at = payload.logged_at or row.logged_at
     row.weight_kg = payload.weight_kg
     row.body_fat_pct = payload.body_fat_pct
     row.waist_cm = payload.waist_cm
     row.notes = payload.notes
     session.commit()
-    enqueue_job(session, "insights.recompute", {"source": "weight_update", "weight_entry_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "weight_update", "weight_entry_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     write_audit(session, actor, "weight_entry.updated", "weight_entry", row.id, payload.model_dump())
     return serialize_weight_entry(row)
 
 
 @router.delete("/weight-entries/{entry_id}")
 def delete_weight_entry(entry_id: str, actor: Actor = Depends(metrics_write), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = session.get(WeightEntry, entry_id)
-    if not row or row.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Weight entry not found.")
+    row = ensure_owned(session, WeightEntry, entry_id, actor.user_id, "Weight entry not found.")
     row.deleted_at = utcnow()
     session.commit()
-    enqueue_job(session, "insights.recompute", {"source": "weight_delete", "weight_entry_id": row.id}, dedupe_key=f"insights-live:{utcnow().strftime('%Y%m%d%H%M')}")
+    enqueue_job(
+        session,
+        "insights.recompute",
+        actor.user_id,
+        {"source": "weight_delete", "weight_entry_id": row.id, "user_id": actor.user_id},
+        dedupe_key=f"insights-live:{actor.user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
     write_audit(session, actor, "weight_entry.deleted", "weight_entry", row.id, {"weight_kg": row.weight_kg})
     return {"status": "deleted", "id": row.id}
 
@@ -127,8 +151,12 @@ def serialize_weight_entry(row: WeightEntry) -> dict[str, Any]:
     }
 
 
-def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
-    rows = session.scalars(select(WeightEntry).where(WeightEntry.deleted_at.is_(None)).order_by(WeightEntry.logged_at.asc())).all()
+def load_dashboard_cards(session: Session, actor: Actor) -> list[DashboardCardState]:
+    rows = session.scalars(
+        select(WeightEntry)
+        .where(WeightEntry.user_id == actor.user_id, WeightEntry.deleted_at.is_(None))
+        .order_by(WeightEntry.logged_at.asc())
+    ).all()
     if not rows:
         return [
             DashboardCardState(

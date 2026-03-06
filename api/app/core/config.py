@@ -12,9 +12,10 @@ class Settings:
     api_prefix: str
     database_url: str
     sql_echo: bool
-    bootstrap_username: str
-    bootstrap_password: str
+    admin_username: str
+    admin_password: str
     session_days: int
+    password_setup_hours: int
     storage_root: Path
     upload_root: Path
     export_root: Path
@@ -47,9 +48,10 @@ def get_settings() -> Settings:
             "postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal",
         ),
         sql_echo=os.getenv("FITNESSPAL_SQL_ECHO", "false").lower() == "true",
-        bootstrap_username=os.getenv("FITNESSPAL_BOOTSTRAP_USERNAME", "owner"),
-        bootstrap_password=os.getenv("FITNESSPAL_BOOTSTRAP_PASSWORD", "fitnesspal"),
+        admin_username=os.getenv("FITNESSPAL_ADMIN_USERNAME", os.getenv("FITNESSPAL_BOOTSTRAP_USERNAME", "owner")),
+        admin_password=os.getenv("FITNESSPAL_ADMIN_PASSWORD", os.getenv("FITNESSPAL_BOOTSTRAP_PASSWORD", "fitnesspal")),
         session_days=int(os.getenv("FITNESSPAL_SESSION_DAYS", "30")),
+        password_setup_hours=int(os.getenv("FITNESSPAL_PASSWORD_SETUP_HOURS", "72")),
         storage_root=storage_root,
         upload_root=upload_root,
         export_root=export_root,

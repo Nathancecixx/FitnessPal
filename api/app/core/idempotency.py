@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.core.models import IdempotencyRecord
+from app.core.security import resolve_actor_from_credentials
 
 
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -29,10 +30,20 @@ class IdempotentRoute(APIRoute):
 
             body = await request.body()
             body_hash = hashlib.sha256(body).hexdigest()
+            actor = None
 
             with SessionLocal() as session:
+                actor = resolve_actor_from_credentials(
+                    session,
+                    authorization=request.headers.get("Authorization"),
+                    session_cookie=request.cookies.get("fitnesspal_session"),
+                )
+                user_filter = (
+                    IdempotencyRecord.user_id == actor.user_id if actor else IdempotencyRecord.user_id.is_(None)
+                )
                 existing = session.scalar(
                     select(IdempotencyRecord).where(
+                        user_filter,
                         IdempotencyRecord.key == key,
                         IdempotencyRecord.method == request.method.upper(),
                         IdempotencyRecord.path == request.url.path,
@@ -58,6 +69,7 @@ class IdempotentRoute(APIRoute):
                 with SessionLocal() as session:
                     session.add(
                         IdempotencyRecord(
+                            user_id=actor.user_id if actor else None,
                             key=key,
                             method=request.method.upper(),
                             path=request.url.path,

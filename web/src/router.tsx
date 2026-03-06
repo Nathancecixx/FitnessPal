@@ -10,6 +10,7 @@ const LazyWeightPage = lazy(async () => ({ default: (await import('./features/we
 const LazyTemplatesPage = lazy(async () => ({ default: (await import('./features/templates/templates-page')).TemplatesPage }))
 const LazyInsightsPage = lazy(async () => ({ default: (await import('./features/insights/insights-page')).InsightsPage }))
 const LazySettingsPage = lazy(async () => ({ default: (await import('./features/settings/settings-page')).SettingsPage }))
+const LazySetupPasswordPage = lazy(async () => ({ default: (await import('./features/auth/setup-password-page')).SetupPasswordPage }))
 
 function LoadingFallback() {
   return <div className="rounded-[24px] bg-white/80 px-4 py-8 text-center text-sm text-slate-500 shadow-halo">Loading page...</div>
@@ -71,6 +72,14 @@ function SettingsPage() {
   )
 }
 
+function SetupPasswordPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazySetupPasswordPage />
+    </Suspense>
+  )
+}
+
 const rootRoute = createRootRoute({ component: AppShell })
 
 const dashboardRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: DashboardPage })
@@ -80,6 +89,7 @@ const weightRoute = createRoute({ getParentRoute: () => rootRoute, path: '/weigh
 const templatesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/templates', component: TemplatesPage })
 const insightsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/insights', component: InsightsPage })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage })
+const setupPasswordRoute = createRoute({ getParentRoute: () => rootRoute, path: '/setup-password', component: SetupPasswordPage })
 
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
@@ -89,6 +99,7 @@ const routeTree = rootRoute.addChildren([
   templatesRoute,
   insightsRoute,
   settingsRoute,
+  setupPasswordRoute,
 ])
 
 export const router = createRouter({ routeTree })

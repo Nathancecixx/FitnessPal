@@ -1,8 +1,8 @@
-﻿import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { ActionButton, DataList, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
-import { api } from '../../lib/api'
+import { api, type UserSetupResponse } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
 
 const apiKeyPresets = [
@@ -13,10 +13,28 @@ const apiKeyPresets = [
   { label: 'Training only', value: 'training', scopes: ['training:*', 'metrics:read', 'insights:read'] },
 ] as const
 
+function resolveSetupUser(result: UserSetupResponse) {
+  return result.user ?? {
+    id: result.id ?? '',
+    username: result.username ?? '',
+    is_admin: result.is_admin ?? false,
+    is_active: result.is_active ?? true,
+    has_password: result.has_password ?? false,
+    password_set_at: result.password_set_at ?? null,
+    created_at: result.created_at ?? new Date().toISOString(),
+  }
+}
+
+function resolveSetupUrl(result: UserSetupResponse) {
+  return new URL(result.setup_path, window.location.origin).toString()
+}
+
 export function SettingsPage() {
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession })
+  const isAdmin = Boolean(sessionQuery.data?.user?.is_admin)
   const goalsQuery = useQuery({ queryKey: ['goals'], queryFn: api.listGoals })
   const apiKeysQuery = useQuery({ queryKey: ['api-keys'], queryFn: api.listApiKeys })
+  const usersQuery = useQuery({ queryKey: ['users'], queryFn: api.listUsers, enabled: isAdmin })
   const exportsQuery = useQuery({ queryKey: ['exports'], queryFn: api.listExports })
   const runtimeQuery = useQuery({ queryKey: ['runtime'], queryFn: api.getRuntime })
   const jobsQuery = useQuery({
@@ -31,6 +49,9 @@ export function SettingsPage() {
   const [lastToken, setLastToken] = useState('')
   const [restoreText, setRestoreText] = useState('')
   const [restoreStatus, setRestoreStatus] = useState('')
+  const [passwordDraft, setPasswordDraft] = useState({ current: '', next: '', confirm: '' })
+  const [userDraft, setUserDraft] = useState({ username: '', isAdmin: false })
+  const [setupResult, setSetupResult] = useState<UserSetupResponse | null>(null)
 
   const createGoal = useMutation({
     mutationFn: () => api.createGoal({
@@ -57,6 +78,31 @@ export function SettingsPage() {
     onSuccess: async (result) => {
       setLastToken(result.token ?? '')
       await queryClient.invalidateQueries({ queryKey: ['api-keys'] })
+    },
+  })
+
+  const createUser = useMutation({
+    mutationFn: () => api.createUser({ username: userDraft.username.trim(), is_admin: userDraft.isAdmin }),
+    onSuccess: async (result) => {
+      setSetupResult(result)
+      setUserDraft({ username: '', isAdmin: false })
+      await queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+  })
+
+  const issueSetup = useMutation({
+    mutationFn: (userId: string) => api.issuePasswordSetup(userId),
+    onSuccess: async (result) => {
+      setSetupResult(result)
+      await queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+  })
+
+  const changePassword = useMutation({
+    mutationFn: () => api.changePassword(passwordDraft.current, passwordDraft.next),
+    onSuccess: async () => {
+      setPasswordDraft({ current: '', next: '', confirm: '' })
+      await queryClient.invalidateQueries({ queryKey: ['session'] })
     },
   })
 
@@ -91,9 +137,7 @@ export function SettingsPage() {
     mutationFn: (payload: Record<string, unknown>) => api.restoreExport(payload),
     onSuccess: async (result) => {
       setRestoreStatus(`Restore complete. Tables updated: ${Object.keys(result.counts).length}`)
-      await Promise.all([
-        queryClient.invalidateQueries(),
-      ])
+      await queryClient.invalidateQueries()
     },
     onError: (error) => setRestoreStatus(error.message),
   })
@@ -111,22 +155,22 @@ export function SettingsPage() {
     <div className="space-y-4">
       <PageIntro
         eyebrow="Settings"
-        title="Agent access, runtime status, and local operations"
-        description="Issue API keys for OpenClaw, verify the Ollama connection the worker is using, inspect background jobs, and create or restore local exports without touching any cloud service."
+        title="Accounts, agent access, and local operations"
+        description="Manage admin-created users, issue API keys for trusted clients, inspect runtime and jobs, and export or restore only the signed-in user’s data."
       />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_380px]">
         <div className="space-y-4">
           <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Active runtime" subtitle="Current server, worker, and Ollama-facing configuration.">
+            <Panel title="Active runtime" subtitle="Current server, worker, and AI-facing configuration for this user context.">
               {runtimeQuery.data ? (
                 <DataList rows={[
                   { label: 'App', value: runtimeQuery.data.app_name },
-                  { label: 'Storage', value: runtimeQuery.data.storage_root },
+                  { label: 'Uploads root', value: runtimeQuery.data.uploads_root },
+                  { label: 'Exports root', value: runtimeQuery.data.exports_root },
                   { label: 'Local AI', value: runtimeQuery.data.local_ai.configured ? runtimeQuery.data.local_ai.model : 'Not configured' },
                   { label: 'AI reachable', value: runtimeQuery.data.local_ai.reachable ? 'Yes' : 'No' },
                   { label: 'Model available', value: runtimeQuery.data.local_ai.selected_model_available ? 'Yes' : 'No' },
-                  { label: 'AI endpoint', value: runtimeQuery.data.local_ai.base_url ?? 'Unset' },
                   { label: 'Queued jobs', value: runtimeQuery.data.jobs.queued },
                   { label: 'Running jobs', value: runtimeQuery.data.jobs.running },
                   { label: 'Failed jobs', value: runtimeQuery.data.jobs.failed },
@@ -137,32 +181,73 @@ export function SettingsPage() {
               {runtimeQuery.data?.local_ai.error ? <div className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{runtimeQuery.data.local_ai.error}</div> : null}
             </Panel>
 
-            <Panel title="Goals" subtitle="Targets that drive nutrition and bodyweight recommendations.">
-              <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); createGoal.mutate() }}>
-                <LabelledInput label="Goal title" value={goalDraft.title} onChange={(value) => setGoalDraft((current) => ({ ...current, title: value }))} />
-                <LabelledInput label="Category" value={goalDraft.category} onChange={(value) => setGoalDraft((current) => ({ ...current, category: value }))} />
-                <LabelledInput label="Metric key" value={goalDraft.metric_key} onChange={(value) => setGoalDraft((current) => ({ ...current, metric_key: value }))} />
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <LabelledInput label="Target" type="number" value={goalDraft.target_value} onChange={(value) => setGoalDraft((current) => ({ ...current, target_value: value }))} />
-                  <LabelledInput label="Unit" value={goalDraft.unit} onChange={(value) => setGoalDraft((current) => ({ ...current, unit: value }))} />
-                  <LabelledInput label="Period" value={goalDraft.period} onChange={(value) => setGoalDraft((current) => ({ ...current, period: value }))} />
-                </div>
-                <ActionButton type="submit">Save goal</ActionButton>
+            <Panel title="Password" subtitle="Change the password for the current signed-in account.">
+              <form className="grid gap-3" onSubmit={(event) => {
+                event.preventDefault()
+                changePassword.mutate()
+              }}
+              >
+                <LabelledInput label="Current password" type="password" value={passwordDraft.current} onChange={(value) => setPasswordDraft((current) => ({ ...current, current: value }))} />
+                <LabelledInput label="New password" type="password" value={passwordDraft.next} onChange={(value) => setPasswordDraft((current) => ({ ...current, next: value }))} />
+                <LabelledInput label="Confirm password" type="password" value={passwordDraft.confirm} onChange={(value) => setPasswordDraft((current) => ({ ...current, confirm: value }))} />
+                {passwordDraft.next && passwordDraft.confirm && passwordDraft.next !== passwordDraft.confirm ? (
+                  <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">New passwords do not match.</div>
+                ) : null}
+                {changePassword.isError ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{changePassword.error.message}</div> : null}
+                {changePassword.isSuccess ? <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-900">Password updated.</div> : null}
+                <ActionButton type="submit" disabled={changePassword.isPending || passwordDraft.next.length < 8 || passwordDraft.next !== passwordDraft.confirm}>
+                  Update password
+                </ActionButton>
               </form>
-              <div className="mt-4 space-y-2">
-                {(goalsQuery.data?.items ?? []).map((goal) => (
-                  <div key={goal.id} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>{goal.title}: {goal.target_value} {goal.unit}/{goal.period}</div>
-                      <ActionButton tone="secondary" onClick={() => deleteGoal.mutate(goal.id)} className="w-auto">Delete</ActionButton>
-                    </div>
-                  </div>
-                ))}
-              </div>
             </Panel>
           </div>
 
-          <Panel title="Exports and restore" subtitle="Create local backups and restore JSON payloads into the current database.">
+          {isAdmin ? (
+            <Panel title="Users" subtitle="Admin accounts can create users and issue one-time password setup links.">
+              <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+                <form className="grid gap-3" onSubmit={(event) => {
+                  event.preventDefault()
+                  createUser.mutate()
+                }}
+                >
+                  <LabelledInput label="Username" value={userDraft.username} onChange={(value) => setUserDraft((current) => ({ ...current, username: value }))} placeholder="alice" />
+                  <label className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                    <input type="checkbox" checked={userDraft.isAdmin} onChange={(event) => setUserDraft((current) => ({ ...current, isAdmin: event.target.checked }))} />
+                    Create as admin
+                  </label>
+                  {createUser.isError ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{createUser.error.message}</div> : null}
+                  <ActionButton type="submit" disabled={!userDraft.username.trim() || createUser.isPending}>Create user</ActionButton>
+                </form>
+
+                <div className="space-y-3">
+                  {setupResult ? (
+                    <div className="rounded-[24px] bg-slate-950 px-4 py-4 text-sm text-canvas">
+                      <div className="font-semibold">{resolveSetupUser(setupResult).username}</div>
+                      <div className="mt-2 break-all">{resolveSetupUrl(setupResult)}</div>
+                      <div className="mt-2 break-all text-slate-300">{setupResult.setup_token}</div>
+                      <div className="mt-2 text-xs text-slate-400">Expires: {new Date(setupResult.setup_expires_at).toLocaleString()}</div>
+                    </div>
+                  ) : null}
+
+                  {(usersQuery.data?.items ?? []).map((user) => (
+                    <div key={user.id} className="rounded-[24px] border border-slate-200 bg-white px-4 py-4 text-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-semibold text-slate-950">{user.username}</div>
+                          <div className="mt-1 text-slate-500">{user.is_admin ? 'Admin' : 'User'} · {user.has_password ? 'Password set' : 'Pending setup'}</div>
+                          <div className="mt-1 text-xs text-slate-400">Created {new Date(user.created_at).toLocaleString()}</div>
+                        </div>
+                        <ActionButton tone="secondary" onClick={() => issueSetup.mutate(user.id)} className="w-auto">Issue link</ActionButton>
+                      </div>
+                    </div>
+                  ))}
+                  {!usersQuery.data?.items?.length ? <EmptyState title="No managed users yet" body="Create the first non-admin user and share the issued setup link so they can choose their own password." /> : null}
+                </div>
+              </div>
+            </Panel>
+          ) : null}
+
+          <Panel title="Exports and restore" subtitle="Create local backups and restore JSON payloads into the current signed-in user’s data scope.">
             <div className="flex flex-wrap gap-3">
               <ActionButton onClick={() => createExport.mutate()}>Create export</ActionButton>
               <a className="inline-flex items-center justify-center rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-900" href={api.getAgentManifestUrl()} target="_blank" rel="noreferrer">Open agent manifest</a>
@@ -179,7 +264,7 @@ export function SettingsPage() {
                   </div>
                 </div>
               ))}
-              {!exportsQuery.data?.items?.length ? <EmptyState title="No exports yet" body="Create a backup before major refactors or before giving your agent broader write workflows." /> : null}
+              {!exportsQuery.data?.items?.length ? <EmptyState title="No exports yet" body="Create a backup before large refactors or before testing a new client against your data." /> : null}
             </div>
             <div className="mt-5 rounded-[24px] bg-slate-50 p-4">
               <LabelledTextArea label="Restore JSON" value={restoreText} onChange={setRestoreText} rows={8} placeholder="Paste a FitnessPal export payload here" />
@@ -198,14 +283,14 @@ export function SettingsPage() {
             </div>
           </Panel>
 
-          <Panel title="Background jobs" subtitle="Live view of the worker queue and the last processed tasks.">
+          <Panel title="Background jobs" subtitle="Live view of the worker queue for the current user.">
             <div className="space-y-3">
               {(jobsQuery.data?.items ?? []).map((job) => (
                 <div key={job.id} className="rounded-[24px] border border-slate-200 bg-white px-4 py-4 text-sm">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="font-semibold text-slate-950">{job.job_type}</div>
-                      <div className="mt-1 text-slate-500">{job.status} - attempt {job.attempts}/{job.max_attempts}</div>
+                      <div className="mt-1 text-slate-500">{job.status} · attempt {job.attempts}/{job.max_attempts}</div>
                     </div>
                     <div className="text-xs uppercase tracking-[0.15em] text-slate-400">{new Date(job.created_at).toLocaleString()}</div>
                   </div>
@@ -218,7 +303,7 @@ export function SettingsPage() {
         </div>
 
         <div className="space-y-4">
-          <Panel title="OpenClaw API key" subtitle="Issue a full-control local token for your agent.">
+          <Panel title="OpenClaw API key" subtitle="Issue a scoped local token for agents or future clients.">
             <LabelledInput label="Key name" value={apiKeyName} onChange={setApiKeyName} />
             <div className="mt-3">
               <LabelledSelect
@@ -246,11 +331,13 @@ export function SettingsPage() {
             </div>
           </Panel>
 
-          <Panel title="Session" subtitle="Current local-auth context used by the web app.">
+          <Panel title="Session" subtitle="Current auth context used by the web app.">
             {sessionQuery.data ? (
               <DataList rows={[
                 { label: 'Actor', value: sessionQuery.data.actor.display_name },
                 { label: 'Type', value: sessionQuery.data.actor.type },
+                { label: 'Username', value: sessionQuery.data.user?.username ?? 'Unknown' },
+                { label: 'Role', value: sessionQuery.data.user?.is_admin ? 'Admin' : 'User' },
                 { label: 'Scopes', value: sessionQuery.data.actor.scopes.join(', ') },
                 { label: 'API base', value: runtimeQuery.data?.api_prefix ?? '/api/v1' },
                 { label: 'Agent manifest', value: api.getAgentManifestUrl() },
@@ -259,9 +346,32 @@ export function SettingsPage() {
               <EmptyState title="Not signed in" body="Use the login screen to establish a local session before managing the system." />
             )}
           </Panel>
+
+          <Panel title="Goals" subtitle="Targets that drive nutrition and bodyweight recommendations.">
+            <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); createGoal.mutate() }}>
+              <LabelledInput label="Goal title" value={goalDraft.title} onChange={(value) => setGoalDraft((current) => ({ ...current, title: value }))} />
+              <LabelledInput label="Category" value={goalDraft.category} onChange={(value) => setGoalDraft((current) => ({ ...current, category: value }))} />
+              <LabelledInput label="Metric key" value={goalDraft.metric_key} onChange={(value) => setGoalDraft((current) => ({ ...current, metric_key: value }))} />
+              <div className="grid gap-3 sm:grid-cols-3">
+                <LabelledInput label="Target" type="number" value={goalDraft.target_value} onChange={(value) => setGoalDraft((current) => ({ ...current, target_value: value }))} />
+                <LabelledInput label="Unit" value={goalDraft.unit} onChange={(value) => setGoalDraft((current) => ({ ...current, unit: value }))} />
+                <LabelledInput label="Period" value={goalDraft.period} onChange={(value) => setGoalDraft((current) => ({ ...current, period: value }))} />
+              </div>
+              <ActionButton type="submit">Save goal</ActionButton>
+            </form>
+            <div className="mt-4 space-y-2">
+              {(goalsQuery.data?.items ?? []).map((goal) => (
+                <div key={goal.id} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>{goal.title}: {goal.target_value} {goal.unit}/{goal.period}</div>
+                    <ActionButton tone="secondary" onClick={() => deleteGoal.mutate(goal.id)} className="w-auto">Delete</ActionButton>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Panel>
         </div>
       </div>
     </div>
   )
 }
-

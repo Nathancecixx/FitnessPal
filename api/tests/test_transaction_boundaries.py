@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
 import unittest
 
 from fastapi import APIRouter, FastAPI
@@ -9,11 +7,12 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 import app.core.models  # noqa: F401
 from app.core.database import Base
 from app.core.database import get_session
-from app.core.models import Recipe, SetEntry, WorkoutSession
+from app.core.models import AppUser, Recipe, SetEntry, WorkoutSession
 from app.core.security import Actor, get_actor
 from app.modules.nutrition import RecipeCreate, RecipeItemInput, create_recipe
 from app.modules.nutrition import router as nutrition_router
@@ -23,9 +22,12 @@ from app.modules.training import router as training_router
 
 class TransactionBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        database_path = Path(self.temp_dir.name) / "test.db"
-        self.engine = create_engine(f"sqlite:///{database_path}", future=True)
+        self.engine = create_engine(
+            "sqlite://",
+            future=True,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, autocommit=False, expire_on_commit=False)
         self.actor = Actor(
@@ -34,11 +36,15 @@ class TransactionBoundaryTests(unittest.TestCase):
             display_name="owner",
             scopes=("*",),
             user_id="user-test",
+            username="owner",
+            is_admin=False,
         )
+        with self.SessionLocal() as session:
+            session.add(AppUser(id=self.actor.user_id, username=self.actor.username, password_hash="hashed", is_active=True))
+            session.commit()
 
     def tearDown(self) -> None:
         self.engine.dispose()
-        self.temp_dir.cleanup()
 
     def build_test_app(self) -> FastAPI:
         app = FastAPI()

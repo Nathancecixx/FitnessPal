@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
 import unittest
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 import app.core.models  # noqa: F401
 from app.core.database import Base
@@ -20,9 +19,12 @@ from app.modules.training import SetEntryInput, WorkoutSessionCreate, WorkoutSes
 
 class UpdateAndScopeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        database_path = Path(self.temp_dir.name) / "test.db"
-        self.engine = create_engine(f"sqlite:///{database_path}", future=True)
+        self.engine = create_engine(
+            "sqlite://",
+            future=True,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, autocommit=False, expire_on_commit=False)
         self.actor = Actor(
@@ -31,11 +33,15 @@ class UpdateAndScopeTests(unittest.TestCase):
             display_name="owner",
             scopes=("*",),
             user_id="user-test",
+            username="owner",
+            is_admin=False,
         )
+        with self.SessionLocal() as session:
+            session.add(AppUser(id=self.actor.user_id, username=self.actor.username, password_hash="hashed", is_active=True))
+            session.commit()
 
     def tearDown(self) -> None:
         self.engine.dispose()
-        self.temp_dir.cleanup()
 
     def test_require_scope_accepts_namespace_wildcard(self) -> None:
         dependency = require_scope("nutrition:write")
@@ -45,6 +51,8 @@ class UpdateAndScopeTests(unittest.TestCase):
             display_name="assistant",
             scopes=("nutrition:*",),
             user_id="user-test",
+            username="assistant",
+            is_admin=False,
         )
 
         resolved = dependency(scoped_actor)
@@ -59,6 +67,8 @@ class UpdateAndScopeTests(unittest.TestCase):
             display_name="assistant",
             scopes=("training:*",),
             user_id="user-test",
+            username="assistant",
+            is_admin=False,
         )
 
         with self.assertRaises(HTTPException) as error:
@@ -69,7 +79,7 @@ class UpdateAndScopeTests(unittest.TestCase):
 
     def test_update_meal_replaces_items_and_recalculates_totals(self) -> None:
         with self.SessionLocal() as session:
-            chicken = FoodItem(name="Chicken breast", calories=165, protein_g=31, carbs_g=0, fat_g=3.6)
+            chicken = FoodItem(user_id=self.actor.user_id, name="Chicken breast", calories=165, protein_g=31, carbs_g=0, fat_g=3.6)
             session.add(chicken)
             session.commit()
             session.refresh(chicken)
@@ -116,7 +126,7 @@ class UpdateAndScopeTests(unittest.TestCase):
 
     def test_update_workout_session_replaces_sets_and_recalculates_volume(self) -> None:
         with self.SessionLocal() as session:
-            bench = Exercise(name="Bench press", rep_target_min=5, rep_target_max=8, load_increment=2.5)
+            bench = Exercise(user_id=self.actor.user_id, name="Bench press", rep_target_min=5, rep_target_max=8, load_increment=2.5)
             session.add(bench)
             session.commit()
             session.refresh(bench)
@@ -179,12 +189,19 @@ class UpdateAndScopeTests(unittest.TestCase):
     def test_restore_payload_rolls_back_all_rows_when_any_row_is_invalid(self) -> None:
         payload = {
             "tables": {
-                "app_users": [
+                "food_items": [
                     {
                         "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                        "username": "owner",
-                        "password_hash": "hashed-password",
-                        "is_active": True,
+                        "name": "Chicken breast",
+                        "calories": 165,
+                        "protein_g": 31,
+                        "carbs_g": 0,
+                        "fat_g": 3.6,
+                        "fiber_g": 0,
+                        "sugar_g": 0,
+                        "sodium_mg": 0,
+                        "is_favorite": False,
+                        "tags_json": [],
                     }
                 ],
                 "goals": [
@@ -203,12 +220,12 @@ class UpdateAndScopeTests(unittest.TestCase):
 
         with self.SessionLocal() as session:
             with self.assertRaises(Exception):
-                restore_payload(session, payload)
+                restore_payload(session, payload, self.actor.user_id)
 
-            user_count = session.scalar(select(func.count(AppUser.id))) or 0
+            food_count = session.scalar(select(func.count(FoodItem.id))) or 0
             goal_count = session.scalar(select(func.count(Goal.id))) or 0
 
-        self.assertEqual(user_count, 0)
+        self.assertEqual(food_count, 0)
         self.assertEqual(goal_count, 0)
 
 

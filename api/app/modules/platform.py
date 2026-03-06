@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
@@ -16,31 +16,23 @@ from app.core.database import get_session
 from app.core.idempotency import IdempotentRoute
 from app.core.local_ai import inspect_local_ai, parse_natural_language_entry
 from app.core.modules import ModuleManifest
+from app.core.ownership import ensure_owned
 from app.core.schemas import AgentExample, DashboardCardDefinition, DashboardCardState
 from app.core.security import (
     Actor,
     authenticate_user,
+    change_password,
     create_api_key as issue_api_key,
+    create_password_setup_token,
     create_session_token,
-    ensure_bootstrap_user,
+    ensure_admin_user,
     get_actor,
+    redeem_password_setup_token,
     require_scope,
 )
 from app.core.serialization import export_payload, restore_payload
 from app.core.storage import write_json_export
-from app.core.models import (
-    ApiKey,
-    AppUser,
-    ExportRecord,
-    FoodItem,
-    Goal,
-    JobRecord,
-    MealEntry,
-    SessionToken,
-    WeightEntry,
-    WorkoutSession,
-    utcnow,
-)
+from app.core.models import ApiKey, AppUser, ExportRecord, FoodItem, Goal, JobRecord, MealEntry, SessionToken, WeightEntry, WorkoutSession, utcnow
 
 
 settings = get_settings()
@@ -53,6 +45,16 @@ assistant_use = require_scope("assistant:use")
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class PasswordSetupRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
 
 
 class GoalCreate(BaseModel):
@@ -78,6 +80,71 @@ class AssistantParseRequest(BaseModel):
     note: str
 
 
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    is_admin: bool = False
+
+
+def admin_write(actor: Actor = Depends(platform_write)) -> Actor:
+    if not actor.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+    return actor
+
+
+def set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="fitnesspal_session",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=settings.session_days * 24 * 3600,
+    )
+
+
+def audit_actor_for_user(user: AppUser) -> Actor:
+    return Actor(
+        actor_type="user",
+        actor_id=user.id,
+        display_name=user.username,
+        scopes=(),
+        user_id=user.id,
+        username=user.username,
+        is_admin=user.is_admin,
+    )
+
+
+def serialize_user(row: AppUser) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "username": row.username,
+        "is_admin": row.is_admin,
+        "is_active": row.is_active,
+        "has_password": bool(row.password_hash),
+        "password_set_at": row.password_set_at.isoformat() if row.password_set_at else None,
+        "created_at": row.created_at.isoformat(),
+    }
+
+
+def build_auth_payload(user: AppUser, session_token: str) -> dict[str, Any]:
+    scopes = [
+        "platform:read",
+        "platform:write",
+        "nutrition:*",
+        "training:*",
+        "metrics:*",
+        "insights:*",
+        "assistant:use",
+    ]
+    if user.is_admin:
+        scopes.append("admin:*")
+    return {
+        "user": serialize_user(user),
+        "scopes": scopes,
+        "session_token": session_token,
+    }
+
+
 @router.get("/health")
 def healthcheck() -> dict[str, Any]:
     return {
@@ -90,23 +157,40 @@ def healthcheck() -> dict[str, Any]:
 
 @router.post("/auth/login")
 def login(payload: LoginRequest, response: Response, session: Session = Depends(get_session)) -> dict[str, Any]:
-    ensure_bootstrap_user(session)
+    ensure_admin_user(session)
     user = authenticate_user(session, payload.username, payload.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
     token = create_session_token(session, user)
-    response.set_cookie(
-        key="fitnesspal_session",
-        value=token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=settings.session_days * 24 * 3600,
-    )
-    return {
-        "user": {"id": user.id, "username": user.username},
-        "scopes": ["*"],
-    }
+    set_session_cookie(response, token)
+    return build_auth_payload(user, token)
+
+
+@router.post("/auth/password/setup")
+def setup_password(
+    payload: PasswordSetupRequest,
+    response: Response,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    user = redeem_password_setup_token(session, payload.token, payload.new_password)
+    token = create_session_token(session, user)
+    set_session_cookie(response, token)
+    write_audit(session, audit_actor_for_user(user), "auth.password_setup_completed", "user", user.id, {})
+    return build_auth_payload(user, token)
+
+
+@router.post("/auth/password/change")
+def update_password(
+    payload: PasswordChangeRequest,
+    actor: Actor = Depends(platform_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    user = session.get(AppUser, actor.user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=404, detail="User not found.")
+    change_password(session, user, payload.current_password, payload.new_password)
+    write_audit(session, actor, "auth.password_changed", "user", user.id, {})
+    return {"status": "ok"}
 
 
 @router.post("/auth/logout")
@@ -117,7 +201,7 @@ def logout(
 ) -> dict[str, Any]:
     if actor.actor_type == "session":
         record = session.get(SessionToken, actor.actor_id)
-        if record:
+        if record and record.user_id == actor.user_id:
             record.revoked_at = utcnow()
             session.commit()
     response.delete_cookie("fitnesspal_session")
@@ -125,27 +209,84 @@ def logout(
 
 
 @router.get("/auth/session")
-def current_session(actor: Actor = Depends(platform_read)) -> dict[str, Any]:
+def current_session(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
+    user = session.get(AppUser, actor.user_id)
     return {
         "actor": {
             "id": actor.actor_id,
             "type": actor.actor_type,
             "display_name": actor.display_name,
             "scopes": list(actor.scopes),
-        }
+        },
+        "user": serialize_user(user) if user else None,
+    }
+
+
+@router.get("/users")
+def list_users(actor: Actor = Depends(admin_write), session: Session = Depends(get_session)) -> dict[str, Any]:
+    rows = session.scalars(select(AppUser).order_by(AppUser.created_at.desc())).all()
+    return {"items": [serialize_user(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
+
+
+@router.post("/users", status_code=status.HTTP_201_CREATED)
+def create_user(
+    payload: UserCreate,
+    actor: Actor = Depends(admin_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    username = payload.username.strip()
+    existing = session.scalar(select(AppUser).where(AppUser.username == username))
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists.")
+    user = AppUser(username=username, is_admin=payload.is_admin, is_active=True)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    token_record, token = create_password_setup_token(session, user, created_by_user_id=actor.user_id)
+    write_audit(session, actor, "user.created", "user", user.id, {"username": user.username, "is_admin": user.is_admin})
+    return {
+        **serialize_user(user),
+        "setup_token": token,
+        "setup_expires_at": token_record.expires_at.isoformat(),
+        "setup_path": f"/setup-password?token={quote(token)}",
+    }
+
+
+@router.post("/users/{user_id}/password-setup", status_code=status.HTTP_201_CREATED)
+def issue_password_setup(
+    user_id: str,
+    actor: Actor = Depends(admin_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    user = session.get(AppUser, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    token_record, token = create_password_setup_token(session, user, created_by_user_id=actor.user_id)
+    write_audit(session, actor, "user.password_setup_issued", "user", user.id, {"username": user.username})
+    return {
+        "user": serialize_user(user),
+        "setup_token": token,
+        "setup_expires_at": token_record.expires_at.isoformat(),
+        "setup_path": f"/setup-password?token={quote(token)}",
     }
 
 
 @router.get("/metrics")
 def metrics(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     return {
-        "meals": session.scalar(select(func.count(MealEntry.id))) or 0,
-        "foods": session.scalar(select(func.count(FoodItem.id))) or 0,
-        "workouts": session.scalar(select(func.count(WorkoutSession.id))) or 0,
-        "weight_entries": session.scalar(select(func.count(WeightEntry.id))) or 0,
-        "queued_jobs": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "queued")) or 0,
-        "running_jobs": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "running")) or 0,
-        "failed_jobs": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "failed")) or 0,
+        "meals": session.scalar(select(func.count(MealEntry.id)).where(MealEntry.user_id == actor.user_id)) or 0,
+        "foods": session.scalar(select(func.count(FoodItem.id)).where(FoodItem.user_id == actor.user_id)) or 0,
+        "workouts": session.scalar(select(func.count(WorkoutSession.id)).where(WorkoutSession.user_id == actor.user_id)) or 0,
+        "weight_entries": session.scalar(select(func.count(WeightEntry.id)).where(WeightEntry.user_id == actor.user_id)) or 0,
+        "queued_jobs": session.scalar(
+            select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "queued")
+        ) or 0,
+        "running_jobs": session.scalar(
+            select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "running")
+        ) or 0,
+        "failed_jobs": session.scalar(
+            select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "failed")
+        ) or 0,
         "generated_at": utcnow().isoformat(),
         "requested_by": actor.display_name,
     }
@@ -153,14 +294,16 @@ def metrics(actor: Actor = Depends(platform_read), session: Session = Depends(ge
 
 @router.get("/runtime")
 def get_runtime(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    latest_export = session.scalars(select(ExportRecord).order_by(ExportRecord.created_at.desc()).limit(1)).first()
+    latest_export = session.scalars(
+        select(ExportRecord).where(ExportRecord.user_id == actor.user_id).order_by(ExportRecord.created_at.desc()).limit(1)
+    ).first()
     local_ai_status = inspect_local_ai()
     return {
         "app_name": settings.app_name,
         "api_prefix": settings.api_prefix,
         "storage_root": str(settings.storage_root),
-        "uploads_root": str(settings.upload_root),
-        "exports_root": str(settings.export_root),
+        "uploads_root": str(settings.upload_root / actor.user_id),
+        "exports_root": str(settings.export_root / actor.user_id),
         "agent_manifest_url": settings.agent_manifest_url,
         "allow_origins": list(settings.allow_origins),
         "local_ai": {
@@ -174,9 +317,15 @@ def get_runtime(actor: Actor = Depends(platform_read), session: Session = Depend
             "error": local_ai_status["error"],
         },
         "jobs": {
-            "queued": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "queued")) or 0,
-            "running": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "running")) or 0,
-            "failed": session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "failed")) or 0,
+            "queued": session.scalar(
+                select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "queued")
+            ) or 0,
+            "running": session.scalar(
+                select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "running")
+            ) or 0,
+            "failed": session.scalar(
+                select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "failed")
+            ) or 0,
         },
         "last_export_at": latest_export.created_at.isoformat() if latest_export else None,
         "requested_by": actor.display_name,
@@ -190,16 +339,23 @@ def list_jobs(
     status: str | None = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
 ) -> dict[str, Any]:
-    query = select(JobRecord).order_by(JobRecord.created_at.desc()).limit(limit)
+    query = select(JobRecord).where(JobRecord.user_id == actor.user_id).order_by(JobRecord.created_at.desc()).limit(limit)
     if status:
-        query = select(JobRecord).where(JobRecord.status == status).order_by(JobRecord.created_at.desc()).limit(limit)
+        query = (
+            select(JobRecord)
+            .where(JobRecord.user_id == actor.user_id, JobRecord.status == status)
+            .order_by(JobRecord.created_at.desc())
+            .limit(limit)
+        )
     rows = session.scalars(query).all()
     return {"items": [serialize_job(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
 
 
 @router.get("/goals")
 def list_goals(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(Goal).where(Goal.deleted_at.is_(None)).order_by(Goal.created_at.desc())).all()
+    rows = session.scalars(
+        select(Goal).where(Goal.user_id == actor.user_id, Goal.deleted_at.is_(None)).order_by(Goal.created_at.desc())
+    ).all()
     return {"items": [serialize_goal(row) for row in rows], "total": len(rows)}
 
 
@@ -209,7 +365,7 @@ def create_goal(
     actor: Actor = Depends(platform_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    goal = Goal(**payload.model_dump())
+    goal = Goal(user_id=actor.user_id, **payload.model_dump())
     session.add(goal)
     session.commit()
     session.refresh(goal)
@@ -219,9 +375,7 @@ def create_goal(
 
 @router.delete("/goals/{goal_id}")
 def delete_goal(goal_id: str, actor: Actor = Depends(platform_write), session: Session = Depends(get_session)) -> dict[str, Any]:
-    goal = session.get(Goal, goal_id)
-    if not goal or goal.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Goal not found.")
+    goal = ensure_owned(session, Goal, goal_id, actor.user_id, "Goal not found.")
     goal.deleted_at = utcnow()
     session.commit()
     write_audit(session, actor, "goal.deleted", "goal", goal.id, {"title": goal.title})
@@ -230,7 +384,11 @@ def delete_goal(goal_id: str, actor: Actor = Depends(platform_write), session: S
 
 @router.get("/api-keys")
 def list_api_keys(actor: Actor = Depends(platform_write), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(ApiKey).where(ApiKey.revoked_at.is_(None)).order_by(ApiKey.created_at.desc())).all()
+    rows = session.scalars(
+        select(ApiKey)
+        .where(ApiKey.user_id == actor.user_id, ApiKey.revoked_at.is_(None))
+        .order_by(ApiKey.created_at.desc())
+    ).all()
     return {
         "items": [
             {
@@ -253,7 +411,9 @@ def create_api_key_endpoint(
     actor: Actor = Depends(platform_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    owner = session.get(AppUser, actor.user_id) or ensure_bootstrap_user(session)
+    owner = session.get(AppUser, actor.user_id)
+    if not owner:
+        raise HTTPException(status_code=404, detail="User not found.")
     record, token = issue_api_key(session, owner, payload.name, payload.scopes)
     write_audit(session, actor, "api_key.created", "api_key", record.id, {"name": record.name, "scopes": record.scopes})
     return {
@@ -268,7 +428,7 @@ def create_api_key_endpoint(
 @router.delete("/api-keys/{key_id}")
 def revoke_api_key(key_id: str, actor: Actor = Depends(platform_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     record = session.get(ApiKey, key_id)
-    if not record or record.revoked_at is not None:
+    if not record or record.user_id != actor.user_id or record.revoked_at is not None:
         raise HTTPException(status_code=404, detail="API key not found.")
     record.revoked_at = utcnow()
     session.commit()
@@ -278,15 +438,18 @@ def revoke_api_key(key_id: str, actor: Actor = Depends(platform_write), session:
 
 @router.get("/exports")
 def list_exports(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(select(ExportRecord).order_by(ExportRecord.created_at.desc())).all()
+    rows = session.scalars(
+        select(ExportRecord).where(ExportRecord.user_id == actor.user_id).order_by(ExportRecord.created_at.desc())
+    ).all()
     return {"items": [serialize_export(row) for row in rows], "total": len(rows)}
 
 
 @router.post("/exports", status_code=status.HTTP_201_CREATED)
 def create_export(actor: Actor = Depends(platform_write), session: Session = Depends(get_session)) -> dict[str, Any]:
-    payload = export_payload(session)
-    target = write_json_export("fitnesspal-backup", payload)
+    payload = export_payload(session, actor.user_id)
+    target = write_json_export("fitnesspal-backup", payload, actor.user_id)
     record = ExportRecord(
+        user_id=actor.user_id,
         format="json",
         status="ready",
         path=str(target),
@@ -302,9 +465,7 @@ def create_export(actor: Actor = Depends(platform_write), session: Session = Dep
 
 @router.get("/exports/{export_id}/download")
 def download_export(export_id: str, actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> FileResponse:
-    record = session.get(ExportRecord, export_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="Export not found.")
+    record = ensure_owned(session, ExportRecord, export_id, actor.user_id, "Export not found.", include_deleted=True)
     path = Path(record.path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Export file missing.")
@@ -317,7 +478,7 @@ def restore_export(
     actor: Actor = Depends(platform_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    counts = restore_payload(session, payload.payload)
+    counts = restore_payload(session, payload.payload, actor.user_id)
     write_audit(session, actor, "export.restored", "export", None, counts)
     return {"status": "restored", "counts": counts}
 
@@ -377,9 +538,13 @@ def serialize_job(record: JobRecord) -> dict[str, Any]:
     }
 
 
-def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
-    latest_export = session.scalars(select(ExportRecord).order_by(ExportRecord.created_at.desc()).limit(1)).first()
-    queued_jobs = session.scalar(select(func.count(JobRecord.id)).where(JobRecord.status == "queued")) or 0
+def load_dashboard_cards(session: Session, actor: Actor) -> list[DashboardCardState]:
+    latest_export = session.scalars(
+        select(ExportRecord).where(ExportRecord.user_id == actor.user_id).order_by(ExportRecord.created_at.desc()).limit(1)
+    ).first()
+    queued_jobs = session.scalar(
+        select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "queued")
+    ) or 0
     return [
         DashboardCardState(
             key="system-health",
@@ -395,9 +560,11 @@ def load_dashboard_cards(session: Session) -> list[DashboardCardState]:
 
 
 def backup_job(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
-    export_data = export_payload(session)
-    target = write_json_export("fitnesspal-backup", export_data)
+    user_id = str(payload["user_id"])
+    export_data = export_payload(session, user_id)
+    target = write_json_export("fitnesspal-backup", export_data, user_id)
     record = ExportRecord(
+        user_id=user_id,
         format="json",
         status="ready",
         path=str(target),

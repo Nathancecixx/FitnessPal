@@ -41,13 +41,30 @@ class SoftDeleteMixin:
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
+class OwnedMixin:
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_users.id"), index=True)
+
+
 class AppUser(TimestampMixin, Base):
     __tablename__ = "app_users"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(256))
+    password_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    password_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PasswordSetupToken(TimestampMixin, Base):
+    __tablename__ = "password_setup_tokens"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_users.id"), index=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("app_users.id"), nullable=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SessionToken(TimestampMixin, Base):
@@ -79,6 +96,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("app_users.id"), nullable=True, index=True)
     actor_type: Mapped[str] = mapped_column(String(32), index=True)
     actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(128), index=True)
@@ -92,6 +110,7 @@ class IdempotencyRecord(Base):
     __tablename__ = "idempotency_records"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("app_users.id"), nullable=True, index=True)
     key: Mapped[str] = mapped_column(String(255), index=True)
     method: Mapped[str] = mapped_column(String(12), index=True)
     path: Mapped[str] = mapped_column(String(255), index=True)
@@ -101,7 +120,7 @@ class IdempotencyRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
-class JobRecord(TimestampMixin, Base):
+class JobRecord(OwnedMixin, TimestampMixin, Base):
     __tablename__ = "job_records"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -118,7 +137,7 @@ class JobRecord(TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class Goal(TimestampMixin, SoftDeleteMixin, Base):
+class Goal(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "goals"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -132,7 +151,7 @@ class Goal(TimestampMixin, SoftDeleteMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
-class ExportRecord(TimestampMixin, Base):
+class ExportRecord(OwnedMixin, TimestampMixin, Base):
     __tablename__ = "export_records"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -143,7 +162,7 @@ class ExportRecord(TimestampMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class FoodItem(TimestampMixin, SoftDeleteMixin, Base):
+class FoodItem(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "food_items"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -162,7 +181,7 @@ class FoodItem(TimestampMixin, SoftDeleteMixin, Base):
     tags_json: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
-class Recipe(TimestampMixin, SoftDeleteMixin, Base):
+class Recipe(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "recipes"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -173,7 +192,7 @@ class Recipe(TimestampMixin, SoftDeleteMixin, Base):
     tags_json: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
-class RecipeItem(Base):
+class RecipeItem(OwnedMixin, Base):
     __tablename__ = "recipe_items"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -182,7 +201,7 @@ class RecipeItem(Base):
     grams: Mapped[float] = mapped_column(Float)
 
 
-class MealTemplate(TimestampMixin, SoftDeleteMixin, Base):
+class MealTemplate(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "meal_templates"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -192,7 +211,7 @@ class MealTemplate(TimestampMixin, SoftDeleteMixin, Base):
     tags_json: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
-class MealTemplateItem(Base):
+class MealTemplateItem(OwnedMixin, Base):
     __tablename__ = "meal_template_items"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -209,7 +228,7 @@ class MealTemplateItem(Base):
     source_type: Mapped[str] = mapped_column(String(32), default="manual")
 
 
-class PhotoAnalysisDraft(TimestampMixin, Base):
+class PhotoAnalysisDraft(OwnedMixin, TimestampMixin, Base):
     __tablename__ = "photo_analysis_drafts"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -223,7 +242,7 @@ class PhotoAnalysisDraft(TimestampMixin, Base):
     meal_entry_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
 
-class MealEntry(TimestampMixin, SoftDeleteMixin, Base):
+class MealEntry(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "meal_entries"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -244,7 +263,7 @@ class MealEntry(TimestampMixin, SoftDeleteMixin, Base):
     ai_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
-class MealEntryItem(Base):
+class MealEntryItem(OwnedMixin, Base):
     __tablename__ = "meal_entry_items"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -261,7 +280,7 @@ class MealEntryItem(Base):
     source_type: Mapped[str] = mapped_column(String(32), default="manual")
 
 
-class Exercise(TimestampMixin, SoftDeleteMixin, Base):
+class Exercise(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "exercises"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -277,7 +296,7 @@ class Exercise(TimestampMixin, SoftDeleteMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class Routine(TimestampMixin, SoftDeleteMixin, Base):
+class Routine(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "routines"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -287,7 +306,7 @@ class Routine(TimestampMixin, SoftDeleteMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class RoutineExercise(Base):
+class RoutineExercise(OwnedMixin, Base):
     __tablename__ = "routine_exercises"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -301,7 +320,7 @@ class RoutineExercise(Base):
     target_rir: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
-class WorkoutTemplate(TimestampMixin, SoftDeleteMixin, Base):
+class WorkoutTemplate(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "workout_templates"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -310,7 +329,7 @@ class WorkoutTemplate(TimestampMixin, SoftDeleteMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class WorkoutTemplateExercise(Base):
+class WorkoutTemplateExercise(OwnedMixin, Base):
     __tablename__ = "workout_template_exercises"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -324,7 +343,7 @@ class WorkoutTemplateExercise(Base):
     target_rir: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
-class WorkoutSession(TimestampMixin, SoftDeleteMixin, Base):
+class WorkoutSession(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "workout_sessions"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -339,7 +358,7 @@ class WorkoutSession(TimestampMixin, SoftDeleteMixin, Base):
     total_sets: Mapped[int] = mapped_column(Integer, default=0)
 
 
-class SetEntry(TimestampMixin, Base):
+class SetEntry(OwnedMixin, TimestampMixin, Base):
     __tablename__ = "set_entries"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -358,7 +377,7 @@ class SetEntry(TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class WeightEntry(TimestampMixin, SoftDeleteMixin, Base):
+class WeightEntry(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "weight_entries"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
@@ -369,7 +388,7 @@ class WeightEntry(TimestampMixin, SoftDeleteMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class InsightSnapshot(TimestampMixin, Base):
+class InsightSnapshot(OwnedMixin, TimestampMixin, Base):
     __tablename__ = "insight_snapshots"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)

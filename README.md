@@ -2,7 +2,7 @@
 
 FitnessPal is a local-first fitness tracking platform for nutrition, training, bodyweight, and agent-assisted workflows.
 
-It is designed for a single user running the stack on a local machine 24/7, with all structured data, uploaded meal photos, exports, and AI integrations kept under local control.
+It is designed for a small number of trusted users on a local machine or LAN deployment, with all structured data, uploaded meal photos, exports, and AI integrations kept under local control.
 
 ## Table of Contents
 
@@ -50,7 +50,7 @@ Implemented now:
 - training logging with exercises, workout templates, routines, sessions, set-level logging, PR detection, progression recommendations, and session editing
 - weight tracking with rolling 7-day and 30-day trends plus edit/delete correction flows
 - insight snapshots that connect calories, bodyweight, training volume, and recovery flags
-- local auth, scoped API keys, audit logging, export/restore, runtime inspection, and a background job queue
+- local multi-user auth, scoped API keys, audit logging, per-user export/restore, runtime inspection, and a background job queue
 - assistant quick capture for reviewable natural-language drafts before write actions
 - versioned Alembic migrations with startup schema checks for safer upgrades
 - a mobile-first web app with lazy-loaded routes and installable PWA basics
@@ -190,12 +190,12 @@ docker compose up --build -d
 
 ### 4. Sign in
 
-Default bootstrap credentials:
+Bootstrap admin credentials come from:
 
-- username: `owner`
-- password: `fitnesspal`
+- `FITNESSPAL_ADMIN_USERNAME`
+- `FITNESSPAL_ADMIN_PASSWORD`
 
-Change these before exposing the stack anywhere beyond a trusted local machine or LAN.
+After the admin signs in, additional users can be created from Settings. Each created user receives a one-time password setup link and only sees their own data.
 
 ## Local AI and Ollama
 
@@ -337,8 +337,9 @@ The root `.env.example` is the easiest starting point for Docker-based developme
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `FITNESSPAL_DATABASE_URL` | SQLAlchemy database URL | `postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal` |
-| `FITNESSPAL_BOOTSTRAP_USERNAME` | initial local user | `owner` |
-| `FITNESSPAL_BOOTSTRAP_PASSWORD` | initial local password | `fitnesspal` |
+| `FITNESSPAL_ADMIN_USERNAME` | bootstrap admin username | `owner` |
+| `FITNESSPAL_ADMIN_PASSWORD` | bootstrap admin password | `fitnesspal` |
+| `FITNESSPAL_PASSWORD_SETUP_HOURS` | one-time password setup link lifetime | `72` |
 | `FITNESSPAL_ALLOW_ORIGINS` | CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080` |
 | `FITNESSPAL_AGENT_MANIFEST_URL` | public manifest URL | `http://localhost:8080/.well-known/fitnesspal-agent.json` |
 | `FITNESSPAL_LOCAL_AI_BASE_URL` | local AI endpoint | `http://host.docker.internal:11434/v1` |
@@ -423,8 +424,8 @@ docker compose ps
 
 ## Known Limitations
 
-- single-user only
 - local-first by design, not a hosted multi-tenant SaaS
+- intended for trusted local or LAN users rather than untrusted internet-facing self-signup
 - end-to-end browser coverage is still missing
 - assistant parsing remains a review-and-apply workflow rather than a fully conversational coach loop
 - tests do not yet cover the full integration surface

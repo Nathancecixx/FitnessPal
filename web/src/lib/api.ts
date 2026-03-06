@@ -237,6 +237,46 @@ export type ApiKeyRecord = {
   token?: string
 }
 
+export type ManagedUser = {
+  id: string
+  username: string
+  is_admin: boolean
+  is_active: boolean
+  has_password: boolean
+  password_set_at?: string | null
+  created_at: string
+}
+
+export type AuthResponse = {
+  user: ManagedUser
+  scopes: string[]
+  session_token?: string
+}
+
+export type SessionInfo = {
+  actor: {
+    id: string
+    type: string
+    display_name: string
+    scopes: string[]
+  }
+  user: ManagedUser | null
+}
+
+export type UserSetupResponse = {
+  user?: ManagedUser
+  id?: string
+  username?: string
+  is_admin?: boolean
+  is_active?: boolean
+  has_password?: boolean
+  password_set_at?: string | null
+  created_at?: string
+  setup_token: string
+  setup_expires_at: string
+  setup_path: string
+}
+
 export type ExportRecord = {
   id: string
   format: string
@@ -377,12 +417,20 @@ async function upload<T>(path: string, formData: FormData): Promise<T> {
 }
 
 export const api = {
-  login: (username: string, password: string) => request<{ user: { id: string; username: string } }>('/auth/login', {
+  login: (username: string, password: string) => request<AuthResponse>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
   }),
+  setupPassword: (token: string, newPassword: string) => request<AuthResponse>('/auth/password/setup', {
+    method: 'POST',
+    body: JSON.stringify({ token, new_password: newPassword }),
+  }),
+  changePassword: (currentPassword: string, newPassword: string) => request<{ status: string }>('/auth/password/change', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  }),
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
-  getSession: () => request<{ actor: { id: string; type: string; display_name: string; scopes: string[] } }>('/auth/session'),
+  getSession: () => request<SessionInfo>('/auth/session'),
   getDashboard: () => request<{ cards: DashboardCard[]; available_modules: string[] }>('/dashboard'),
   getRuntime: () => request<RuntimeInfo>('/runtime'),
   listJobs: (status?: string) => request<{ items: JobRecord[]; total: number }>(`/jobs${status ? `?status=${encodeURIComponent(status)}` : ''}`),
@@ -432,6 +480,9 @@ export const api = {
   listApiKeys: () => request<{ items: ApiKeyRecord[]; total: number }>('/api-keys'),
   createApiKey: (payload: Record<string, unknown>) => request<ApiKeyRecord>('/api-keys', { method: 'POST', body: JSON.stringify(payload) }),
   revokeApiKey: (keyId: string) => request<{ status: string; id: string }>(`/api-keys/${keyId}`, { method: 'DELETE' }),
+  listUsers: () => request<{ items: ManagedUser[]; total: number }>('/users'),
+  createUser: (payload: { username: string; is_admin?: boolean }) => request<UserSetupResponse>('/users', { method: 'POST', body: JSON.stringify(payload) }),
+  issuePasswordSetup: (userId: string) => request<UserSetupResponse>(`/users/${userId}/password-setup`, { method: 'POST' }),
   listExports: () => request<{ items: ExportRecord[]; total: number }>('/exports'),
   createExport: () => request<ExportRecord>('/exports', { method: 'POST' }),
   restoreExport: (payload: Record<string, unknown>) => request<{ status: string; counts: Record<string, number> }>('/exports/restore', {

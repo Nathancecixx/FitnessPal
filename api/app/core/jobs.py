@@ -6,12 +6,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.models import JobRecord, utcnow
+from app.core.models import AppUser, JobRecord, utcnow
 
 
 def enqueue_job(
     session: Session,
     job_type: str,
+    user_id: str,
     payload: dict[str, Any] | None = None,
     *,
     dedupe_key: str | None = None,
@@ -24,6 +25,7 @@ def enqueue_job(
             return existing
 
     record = JobRecord(
+        user_id=user_id,
         job_type=job_type,
         payload_json=payload or {},
         dedupe_key=dedupe_key,
@@ -75,17 +77,21 @@ def fail_job(session: Session, record: JobRecord, error: str) -> None:
 def ensure_daily_jobs(session: Session, target_date: date | None = None) -> None:
     active_date = target_date or utcnow().date()
     available_at = datetime.combine(active_date, time(hour=3), tzinfo=timezone.utc)
-    enqueue_job(
-        session,
-        "insights.recompute",
-        {"date": active_date.isoformat(), "scheduled": True},
-        dedupe_key=f"insights:{active_date.isoformat()}",
-        available_at=available_at,
-    )
-    enqueue_job(
-        session,
-        "platform.backup",
-        {"date": active_date.isoformat(), "scheduled": True},
-        dedupe_key=f"backup:{active_date.isoformat()}",
-        available_at=available_at + timedelta(minutes=5),
-    )
+    active_users = session.scalars(select(AppUser).where(AppUser.is_active.is_(True))).all()
+    for user in active_users:
+        enqueue_job(
+            session,
+            "insights.recompute",
+            user.id,
+            {"date": active_date.isoformat(), "scheduled": True, "user_id": user.id},
+            dedupe_key=f"insights:{user.id}:{active_date.isoformat()}",
+            available_at=available_at,
+        )
+        enqueue_job(
+            session,
+            "platform.backup",
+            user.id,
+            {"date": active_date.isoformat(), "scheduled": True, "user_id": user.id},
+            dedupe_key=f"backup:{user.id}:{active_date.isoformat()}",
+            available_at=available_at + timedelta(minutes=5),
+        )

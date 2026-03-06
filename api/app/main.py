@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import get_session, init_db, session_scope
 from app.core.schemas import AgentManifest, DashboardCardState
-from app.core.security import ensure_bootstrap_user, get_actor
+from app.core.security import Actor, ensure_admin_user, get_actor
 from app.core.storage import ensure_storage_dirs
 from app.modules import load_manifests
 
@@ -24,7 +24,7 @@ async def lifespan(_: FastAPI):
     ensure_storage_dirs()
     init_db()
     with session_scope() as session:
-        ensure_bootstrap_user(session)
+        ensure_admin_user(session)
     yield
 
 
@@ -49,11 +49,11 @@ for manifest in manifests:
 
 
 @api_router.get("/dashboard")
-def get_dashboard(session: Session = Depends(get_session), _: Any = Depends(get_actor)) -> dict[str, Any]:
+def get_dashboard(session: Session = Depends(get_session), actor: Actor = Depends(get_actor)) -> dict[str, Any]:
     cards: list[DashboardCardState] = []
     for manifest in manifests:
         if manifest.dashboard_loader:
-            cards.extend(manifest.dashboard_loader(session))
+            cards.extend(manifest.dashboard_loader(session, actor))
     cards.sort(key=lambda card: card.priority, reverse=True)
     return {
         "cards": [card.model_dump() for card in cards],

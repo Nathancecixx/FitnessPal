@@ -54,8 +54,8 @@ function ThemeToggle(props: { theme: ThemeMode; onToggle: () => void; className?
 }
 
 function LoginScreen(props: { theme: ThemeMode; onToggleTheme: () => void }) {
-  const [username, setUsername] = useState('owner')
-  const [password, setPassword] = useState('fitnesspal')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const login = useMutation({
     mutationFn: () => api.login(username, password),
     onSuccess: async () => {
@@ -70,12 +70,12 @@ function LoginScreen(props: { theme: ThemeMode; onToggleTheme: () => void }) {
           <div className="text-[11px] uppercase tracking-[0.35em] text-amber-300/75">FitnessPal</div>
           <ThemeToggle theme={props.theme} onToggle={props.onToggleTheme} />
         </div>
-        <h1 className="mt-4 font-display text-4xl leading-none">Phone-first local login</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Sign in once on your phone, then handle everyday tracking from the bottom navigation and quick logging cards.</p>
+        <h1 className="mt-4 font-display text-4xl leading-none">Multi-user local login</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-300">The admin account comes from server config. Admins can issue password setup links for other users from Settings after signing in.</p>
         <form className="mt-6 grid gap-4" onSubmit={(event) => { event.preventDefault(); login.mutate() }}>
           <label className="block">
             <span className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-400">Username</span>
-            <input className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-[16px] text-white outline-none" value={username} onChange={(event) => setUsername(event.target.value)} />
+            <input className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-[16px] text-white outline-none" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Admin or user name" />
           </label>
           <label className="block">
             <span className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-400">Password</span>
@@ -117,6 +117,15 @@ export function AppShell() {
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession, retry: false })
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const currentItem = useMemo(() => navItems.find((item) => item.to === pathname) ?? navItems[0], [pathname])
+  const sessionUser = sessionQuery.data?.user
+  const isSetupRoute = pathname === '/setup-password'
+  const logout = useMutation({
+    mutationFn: api.logout,
+    onSuccess: async () => {
+      queryClient.clear()
+      await queryClient.invalidateQueries({ queryKey: ['session'] })
+    },
+  })
 
   useEffect(() => {
     const root = document.documentElement
@@ -127,6 +136,23 @@ export function AppShell() {
 
   if (sessionQuery.isLoading) {
     return <div className="flex min-h-screen items-center justify-center font-display text-3xl text-slate-700">Booting FitnessPal...</div>
+  }
+
+  if (isSetupRoute && sessionQuery.isError) {
+    return (
+      <div className="min-h-screen px-3 py-4 md:px-4">
+        <div className="mx-auto max-w-5xl">
+          <div className="mb-4 flex items-center justify-between rounded-[28px] border border-white/80 bg-white/82 px-4 py-4 shadow-halo backdrop-blur">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.24em] text-slate-400">FitnessPal</div>
+              <div className="mt-1 font-display text-3xl leading-none text-slate-950">Password setup</div>
+            </div>
+            <ThemeToggle theme={theme} onToggle={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="shrink-0" />
+          </div>
+          <Outlet />
+        </div>
+      </div>
+    )
   }
 
   if (sessionQuery.isError) {
@@ -167,7 +193,20 @@ export function AppShell() {
                   <div className="mt-1 font-display text-3xl leading-none text-slate-950">{currentItem.label}</div>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{currentItem.hint}</p>
                 </div>
-                <ThemeToggle theme={theme} onToggle={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="shrink-0" />
+                <div className="flex items-start gap-3">
+                  <div className="hidden rounded-[22px] bg-slate-100 px-4 py-3 text-right text-xs text-slate-500 md:block">
+                    <div className="font-semibold text-slate-900">{sessionUser?.username}</div>
+                    <div>{sessionUser?.is_admin ? 'Admin' : 'User'}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded-full bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-700 ring-1 ring-slate-200"
+                    onClick={() => logout.mutate()}
+                  >
+                    Sign out
+                  </button>
+                  <ThemeToggle theme={theme} onToggle={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="shrink-0" />
+                </div>
               </div>
               <div className="mt-4 flex gap-2 overflow-x-auto lg:hidden">
                 {navItems.map((item) => (

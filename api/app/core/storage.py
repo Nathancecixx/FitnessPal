@@ -20,8 +20,8 @@ def ensure_storage_dirs() -> None:
     settings.export_root.mkdir(parents=True, exist_ok=True)
 
 
-def save_upload(upload: UploadFile, subdir: str = "meal-photos") -> Path:
-    target_dir = settings.upload_root / subdir
+def save_upload(upload: UploadFile, user_id: str, subdir: str = "meal-photos") -> Path:
+    target_dir = settings.upload_root / user_id / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
     suffix = Path(upload.filename or "upload.bin").suffix or ".bin"
     target_path = target_dir / f"{new_ulid()}{suffix}"
@@ -30,8 +30,9 @@ def save_upload(upload: UploadFile, subdir: str = "meal-photos") -> Path:
     return target_path
 
 
-def write_json_export(name: str, payload: dict[str, Any]) -> Path:
-    settings.export_root.mkdir(parents=True, exist_ok=True)
-    target_path = settings.export_root / f"{name}-{new_ulid()}.json"
+def write_json_export(name: str, payload: dict[str, Any], user_id: str) -> Path:
+    target_dir = settings.export_root / user_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"{name}-{new_ulid()}.json"
     target_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return target_path

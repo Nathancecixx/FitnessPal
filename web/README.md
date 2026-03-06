@@ -59,6 +59,7 @@ Routes:
 - `/templates` - meal and workout template management
 - `/insights` - coaching signals and snapshots
 - `/settings` - runtime inspection, exports, jobs, goals, and scoped API keys
+- `/setup-password` - first-time password setup from an admin-issued link
 
 ## UI Principles
 
@@ -69,7 +70,7 @@ The current UI direction is:
 - quick daily flows first
 - advanced builders behind expandable sections
 - persistent theme selection with a light/dark toggle
-- single-user local product, not a generic admin panel
+- trusted multi-user local product, with admin-issued account management rather than public self-signup
 
 Examples of the current UX direction:
 
@@ -171,4 +172,4 @@ docker compose up --build -d web
 
 - charting still carries a meaningful runtime cost compared with the rest of the UI
 - some advanced backend workflows are exposed in a functional but still early polish state
-- this is a single-user app shell and does not attempt multi-user account management
+- this app assumes trusted local or LAN users and does not attempt public internet self-signup or hosted tenancy controls
