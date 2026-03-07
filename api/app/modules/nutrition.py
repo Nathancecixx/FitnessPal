@@ -81,6 +81,10 @@ class MealTemplateCreate(BaseModel):
     items: list[MealItemInput] = Field(default_factory=list)
 
 
+class MealTemplateUpdate(MealTemplateCreate):
+    pass
+
+
 class MealCreate(BaseModel):
     meal_type: str = "meal"
     logged_at: datetime | None = None
@@ -226,19 +230,8 @@ def create_meal_template(
     actor: Actor = Depends(nutrition_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = MealTemplate(
-        user_id=actor.user_id,
-        name=payload.name,
-        meal_type=payload.meal_type,
-        notes=payload.notes,
-        tags_json=payload.tags_json,
-    )
-    session.add(row)
     try:
-        session.flush()
-        for item in payload.items:
-            normalized = normalize_meal_item(session, item, actor.user_id)
-            session.add(MealTemplateItem(user_id=actor.user_id, meal_template_id=row.id, **normalized))
+        row = persist_meal_template(session, user_id=actor.user_id, meal_template=None, payload=payload)
         session.commit()
     except Exception:
         session.rollback()
@@ -252,6 +245,33 @@ def create_meal_template(
 def get_meal_template(template_id: str, actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     row = ensure_owned(session, MealTemplate, template_id, actor.user_id, "Meal template not found.")
     return serialize_meal_template(session, row)
+
+
+@router.patch("/meal-templates/{template_id}")
+def update_meal_template(
+    template_id: str,
+    payload: MealTemplateUpdate,
+    actor: Actor = Depends(nutrition_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = ensure_owned(session, MealTemplate, template_id, actor.user_id, "Meal template not found.")
+    try:
+        persist_meal_template(session, user_id=actor.user_id, meal_template=row, payload=payload)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    write_audit(session, actor, "meal_template.updated", "meal_template", row.id, payload.model_dump())
+    return serialize_meal_template(session, row)
+
+
+@router.delete("/meal-templates/{template_id}")
+def delete_meal_template(template_id: str, actor: Actor = Depends(nutrition_write), session: Session = Depends(get_session)) -> dict[str, Any]:
+    row = ensure_owned(session, MealTemplate, template_id, actor.user_id, "Meal template not found.")
+    row.deleted_at = utcnow()
+    session.commit()
+    write_audit(session, actor, "meal_template.deleted", "meal_template", row.id, {"meal_type": row.meal_type})
+    return {"status": "deleted", "id": row.id}
 
 
 @router.get("/meals")
@@ -597,6 +617,35 @@ def persist_meal_entry(
 
     for item in items:
         session.add(MealEntryItem(user_id=user_id, meal_entry_id=row.id, **item))
+    return row
+
+
+def persist_meal_template(
+    session: Session,
+    *,
+    user_id: str,
+    meal_template: MealTemplate | None,
+    payload: MealTemplateCreate,
+) -> MealTemplate:
+    row = meal_template or MealTemplate(user_id=user_id)
+    row.user_id = user_id
+    row.name = payload.name
+    row.meal_type = payload.meal_type
+    row.notes = payload.notes
+    row.tags_json = payload.tags_json
+    session.add(row)
+    session.flush()
+
+    existing_items = session.scalars(
+        select(MealTemplateItem).where(MealTemplateItem.user_id == user_id, MealTemplateItem.meal_template_id == row.id)
+    ).all()
+    for existing in existing_items:
+        session.delete(existing)
+    session.flush()
+
+    for item in payload.items:
+        normalized = normalize_meal_item(session, item, user_id)
+        session.add(MealTemplateItem(user_id=user_id, meal_template_id=row.id, **normalized))
     return row
 
 

@@ -73,6 +73,10 @@ class WorkoutTemplateCreate(BaseModel):
     items: list[WorkoutTemplateExerciseInput] = Field(default_factory=list)
 
 
+class WorkoutTemplateUpdate(WorkoutTemplateCreate):
+    pass
+
+
 class SetEntryInput(BaseModel):
     exercise_id: str
     template_exercise_id: str | None = None
@@ -208,15 +212,8 @@ def create_workout_template(
     actor: Actor = Depends(training_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    if payload.routine_id:
-        ensure_owned(session, Routine, payload.routine_id, actor.user_id, "Routine not found.")
-    row = WorkoutTemplate(user_id=actor.user_id, name=payload.name, routine_id=payload.routine_id, notes=payload.notes)
-    session.add(row)
     try:
-        session.flush()
-        for item in payload.items:
-            ensure_owned(session, Exercise, item.exercise_id, actor.user_id, f"Exercise {item.exercise_id} not found.")
-            session.add(WorkoutTemplateExercise(user_id=actor.user_id, workout_template_id=row.id, **item.model_dump()))
+        row = persist_workout_template(session, user_id=actor.user_id, workout_template=None, payload=payload)
         session.commit()
     except Exception:
         session.rollback()
@@ -229,6 +226,33 @@ def create_workout_template(
 def get_workout_template(template_id: str, actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     row = ensure_owned(session, WorkoutTemplate, template_id, actor.user_id, "Workout template not found.")
     return serialize_workout_template(session, row)
+
+
+@router.patch("/workout-templates/{template_id}")
+def update_workout_template(
+    template_id: str,
+    payload: WorkoutTemplateUpdate,
+    actor: Actor = Depends(training_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = ensure_owned(session, WorkoutTemplate, template_id, actor.user_id, "Workout template not found.")
+    try:
+        persist_workout_template(session, user_id=actor.user_id, workout_template=row, payload=payload)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    write_audit(session, actor, "workout_template.updated", "workout_template", row.id, payload.model_dump())
+    return serialize_workout_template(session, row)
+
+
+@router.delete("/workout-templates/{template_id}")
+def delete_workout_template(template_id: str, actor: Actor = Depends(training_write), session: Session = Depends(get_session)) -> dict[str, Any]:
+    row = ensure_owned(session, WorkoutTemplate, template_id, actor.user_id, "Workout template not found.")
+    row.deleted_at = utcnow()
+    session.commit()
+    write_audit(session, actor, "workout_template.deleted", "workout_template", row.id, {})
+    return {"status": "deleted", "id": row.id}
 
 
 @router.get("/workout-sessions")
@@ -398,6 +422,40 @@ def persist_workout_session(
 
     row.total_volume_kg = round(total_volume, 2)
     row.total_sets = working_sets
+    return row
+
+
+def persist_workout_template(
+    session: Session,
+    *,
+    user_id: str,
+    workout_template: WorkoutTemplate | None,
+    payload: WorkoutTemplateCreate,
+) -> WorkoutTemplate:
+    if payload.routine_id:
+        ensure_owned(session, Routine, payload.routine_id, user_id, "Routine not found.")
+
+    row = workout_template or WorkoutTemplate(user_id=user_id)
+    row.user_id = user_id
+    row.name = payload.name
+    row.routine_id = payload.routine_id
+    row.notes = payload.notes
+    session.add(row)
+    session.flush()
+
+    existing_items = session.scalars(
+        select(WorkoutTemplateExercise).where(
+            WorkoutTemplateExercise.user_id == user_id,
+            WorkoutTemplateExercise.workout_template_id == row.id,
+        )
+    ).all()
+    for existing in existing_items:
+        session.delete(existing)
+    session.flush()
+
+    for item in payload.items:
+        ensure_owned(session, Exercise, item.exercise_id, user_id, f"Exercise {item.exercise_id} not found.")
+        session.add(WorkoutTemplateExercise(user_id=user_id, workout_template_id=row.id, **item.model_dump()))
     return row
 
 

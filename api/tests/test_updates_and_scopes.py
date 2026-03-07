@@ -9,12 +9,49 @@ from sqlalchemy.pool import StaticPool
 
 import app.core.models  # noqa: F401
 from app.core.database import Base
-from app.core.models import AppUser, Exercise, FoodItem, Goal, MealEntry, MealEntryItem, SetEntry, WeightEntry, WorkoutSession
+from app.core.models import (
+    AppUser,
+    Exercise,
+    FoodItem,
+    Goal,
+    MealEntry,
+    MealEntryItem,
+    MealTemplate,
+    MealTemplateItem,
+    SetEntry,
+    WeightEntry,
+    WorkoutSession,
+    WorkoutTemplate,
+    WorkoutTemplateExercise,
+)
 from app.core.security import Actor, require_scope
 from app.core.serialization import restore_payload
 from app.modules.metrics import WeightEntryCreate, WeightEntryUpdate, create_weight_entry, update_weight_entry
-from app.modules.nutrition import MealCreate, MealItemInput, MealUpdate, create_meal, update_meal
-from app.modules.training import SetEntryInput, WorkoutSessionCreate, WorkoutSessionUpdate, create_workout_session, update_workout_session
+from app.modules.nutrition import (
+    MealCreate,
+    MealItemInput,
+    MealTemplateCreate,
+    MealTemplateUpdate,
+    MealUpdate,
+    create_meal,
+    create_meal_template,
+    delete_meal_template,
+    update_meal,
+    update_meal_template,
+)
+from app.modules.training import (
+    SetEntryInput,
+    WorkoutSessionCreate,
+    WorkoutSessionUpdate,
+    WorkoutTemplateCreate,
+    WorkoutTemplateExerciseInput,
+    WorkoutTemplateUpdate,
+    create_workout_session,
+    create_workout_template,
+    delete_workout_template,
+    update_workout_session,
+    update_workout_template,
+)
 
 
 class UpdateAndScopeTests(unittest.TestCase):
@@ -162,6 +199,141 @@ class UpdateAndScopeTests(unittest.TestCase):
         self.assertEqual(updated["total_sets"], 1)
         self.assertEqual(updated["total_volume_kg"], 720.0)
         self.assertEqual(workout.total_volume_kg, 720.0)
+
+    def test_update_meal_template_replaces_items_and_recalculates_totals(self) -> None:
+        with self.SessionLocal() as session:
+            chicken = FoodItem(user_id=self.actor.user_id, name="Chicken breast", calories=165, protein_g=31, carbs_g=0, fat_g=3.6)
+            session.add(chicken)
+            session.commit()
+            session.refresh(chicken)
+
+            created = create_meal_template(
+                MealTemplateCreate(
+                    name="Lunch base",
+                    meal_type="lunch",
+                    items=[MealItemInput(food_id=chicken.id, label="Chicken breast", grams=100)],
+                ),
+                self.actor,
+                session,
+            )
+
+            updated = update_meal_template(
+                created["id"],
+                MealTemplateUpdate(
+                    name="Lunch base v2",
+                    meal_type="dinner",
+                    notes="updated",
+                    items=[
+                        MealItemInput(
+                            label="Rice bowl",
+                            grams=450,
+                            calories=540,
+                            protein_g=38,
+                            carbs_g=62,
+                            fat_g=15,
+                            fiber_g=6,
+                            sodium_mg=720,
+                        )
+                    ],
+                ),
+                self.actor,
+                session,
+            )
+
+            item_count = session.scalar(select(func.count(MealTemplateItem.id)).where(MealTemplateItem.meal_template_id == created["id"])) or 0
+            template = session.get(MealTemplate, created["id"])
+
+        self.assertEqual(item_count, 1)
+        self.assertIsNotNone(template)
+        self.assertEqual(updated["name"], "Lunch base v2")
+        self.assertEqual(updated["meal_type"], "dinner")
+        self.assertEqual(updated["notes"], "updated")
+        self.assertEqual(updated["totals"]["calories"], 540)
+        self.assertEqual(updated["totals"]["protein_g"], 38)
+
+    def test_delete_meal_template_soft_deletes_template(self) -> None:
+        with self.SessionLocal() as session:
+            created = create_meal_template(
+                MealTemplateCreate(
+                    name="Delete me",
+                    meal_type="meal",
+                    items=[MealItemInput(label="Oats", grams=80, calories=300, protein_g=10, carbs_g=54, fat_g=5)],
+                ),
+                self.actor,
+                session,
+            )
+
+            deleted = delete_meal_template(created["id"], self.actor, session)
+            template = session.get(MealTemplate, created["id"])
+
+        self.assertEqual(deleted["status"], "deleted")
+        self.assertIsNotNone(template)
+        self.assertIsNotNone(template.deleted_at)
+
+    def test_update_workout_template_replaces_exercises(self) -> None:
+        with self.SessionLocal() as session:
+            bench = Exercise(user_id=self.actor.user_id, name="Bench press", rep_target_min=5, rep_target_max=8, load_increment=2.5)
+            row = Exercise(user_id=self.actor.user_id, name="Barbell row", rep_target_min=6, rep_target_max=10, load_increment=2.5)
+            session.add_all([bench, row])
+            session.commit()
+            session.refresh(bench)
+            session.refresh(row)
+
+            created = create_workout_template(
+                WorkoutTemplateCreate(
+                    name="Upper A",
+                    items=[WorkoutTemplateExerciseInput(exercise_id=bench.id, order_index=0, target_sets=3, target_reps_min=5, target_reps_max=8)],
+                ),
+                self.actor,
+                session,
+            )
+
+            updated = update_workout_template(
+                created["id"],
+                WorkoutTemplateUpdate(
+                    name="Upper B",
+                    notes="updated",
+                    items=[WorkoutTemplateExerciseInput(exercise_id=row.id, order_index=0, target_sets=4, target_reps_min=8, target_reps_max=12, rest_seconds=90)],
+                ),
+                self.actor,
+                session,
+            )
+
+            item_count = session.scalar(
+                select(func.count(WorkoutTemplateExercise.id)).where(WorkoutTemplateExercise.workout_template_id == created["id"])
+            ) or 0
+            template = session.get(WorkoutTemplate, created["id"])
+
+        self.assertEqual(item_count, 1)
+        self.assertIsNotNone(template)
+        self.assertEqual(updated["name"], "Upper B")
+        self.assertEqual(updated["notes"], "updated")
+        self.assertEqual(updated["items"][0]["exercise_id"], row.id)
+        self.assertEqual(updated["items"][0]["target_sets"], 4)
+        self.assertEqual(updated["items"][0]["rest_seconds"], 90)
+
+    def test_delete_workout_template_soft_deletes_template(self) -> None:
+        with self.SessionLocal() as session:
+            bench = Exercise(user_id=self.actor.user_id, name="Bench press", rep_target_min=5, rep_target_max=8, load_increment=2.5)
+            session.add(bench)
+            session.commit()
+            session.refresh(bench)
+
+            created = create_workout_template(
+                WorkoutTemplateCreate(
+                    name="Delete workout",
+                    items=[WorkoutTemplateExerciseInput(exercise_id=bench.id, order_index=0)],
+                ),
+                self.actor,
+                session,
+            )
+
+            deleted = delete_workout_template(created["id"], self.actor, session)
+            template = session.get(WorkoutTemplate, created["id"])
+
+        self.assertEqual(deleted["status"], "deleted")
+        self.assertIsNotNone(template)
+        self.assertIsNotNone(template.deleted_at)
 
     def test_update_weight_entry_overwrites_existing_values(self) -> None:
         with self.SessionLocal() as session:
