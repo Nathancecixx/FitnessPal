@@ -16,6 +16,7 @@ from app.core.local_ai import (
     AiProfileReadOnlyError,
     create_profile,
     delete_profile,
+    generate_coach_advice,
     get_feature_bindings,
     get_latest_coach_brief,
     get_persona_config,
@@ -87,6 +88,10 @@ class AiPersonaUpdate(BaseModel):
     tagline: str
     system_prompt: str
     voice_guidelines_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssistantCoachAdviceRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=1200)
 
 
 def _as_http_error(error: Exception) -> HTTPException:
@@ -240,6 +245,29 @@ def refresh_assistant_brief(actor: Actor = Depends(assistant_use), session: Sess
     row = refresh_coach_brief(session, actor.user_id, snapshot)
     write_audit(session, actor, "assistant_brief.refreshed", "assistant_brief", row.id, {"snapshot_id": snapshot.id})
     return {"brief": serialize_coach_brief(row, get_persona_config(session))}
+
+
+@router.post("/assistant/advice")
+def get_assistant_advice(
+    payload: AssistantCoachAdviceRequest,
+    actor: Actor = Depends(assistant_use),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    snapshot = session.scalars(
+        select(InsightSnapshot).where(InsightSnapshot.user_id == actor.user_id).order_by(InsightSnapshot.created_at.desc()).limit(1)
+    ).first()
+    if not snapshot:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Create an insight snapshot before asking the coach for advice.")
+    advice = generate_coach_advice(session, actor.user_id, snapshot.payload_json, payload.prompt)
+    write_audit(
+        session,
+        actor,
+        "assistant_advice.generated",
+        "assistant_advice",
+        None,
+        {"source": advice.get("source"), "prompt_length": len(payload.prompt.strip())},
+    )
+    return {"advice": advice}
 
 
 manifest = ModuleManifest(key="ai", router=router)

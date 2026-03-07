@@ -434,6 +434,22 @@ export type AssistantBrief = {
   updated_at: string
 }
 
+export type AssistantCoachAdvice = {
+  source: string
+  provider?: string | null
+  model_name?: string | null
+  question: string
+  title: string
+  summary: string
+  body_markdown?: string | null
+  actions: string[]
+  watchouts: string[]
+  focus_area: string
+  follow_up_prompt?: string | null
+  stats: Record<string, string | number | null>
+  generated_at: string
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const IMAGE_RESIZE_THRESHOLD_BYTES = 4 * 1024 * 1024
 const IMAGE_UPLOAD_MAX_EDGE = 2048
@@ -641,4 +657,5 @@ export const api = {
   parseAssistantNote: (note: string) => request<AssistantDraftResponse>('/assistant/parse', { method: 'POST', body: JSON.stringify({ note }) }),
   getAssistantBrief: () => request<{ brief: AssistantBrief }>('/assistant/brief'),
   refreshAssistantBrief: () => request<{ brief: AssistantBrief }>('/assistant/brief/refresh', { method: 'POST' }),
+  askCoachAdvice: (prompt: string) => request<{ advice: AssistantCoachAdvice }>('/assistant/advice', { method: 'POST', body: JSON.stringify({ prompt }) }),
 }

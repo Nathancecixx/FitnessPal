@@ -1092,8 +1092,99 @@ def _coach_brief_fallback(persona: AiPersonaConfig, payload: dict[str, Any]) -> 
     }
 
 
-def generate_coach_brief(session: Session, user_id: str, insight_payload: dict[str, Any]) -> dict[str, Any]:
-    persona = get_persona_config(session)
+def _string_list(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    result: list[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _coach_stats_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    nutrition = payload.get("nutrition", {})
+    training = payload.get("training", {})
+    body = payload.get("body", {})
+    return {
+        "average_calories_7": round(nutrition.get("average_calories_7") or 0),
+        "goal_calories": round(nutrition.get("goal_calories") or 0) if nutrition.get("goal_calories") else None,
+        "adherence_ratio": round(nutrition.get("adherence_ratio") or 0, 3) if nutrition.get("adherence_ratio") is not None else None,
+        "weekly_volume_kg": round(training.get("weekly_volume_kg") or 0),
+        "volume_delta_kg": round(training.get("volume_delta_kg") or 0),
+        "session_count_7": int(training.get("session_count_7") or 0),
+        "pr_count": int(training.get("pr_count") or 0),
+        "latest_weight_kg": round(body.get("latest_weight_kg") or 0, 1) if body.get("latest_weight_kg") is not None else None,
+        "weight_trend_kg_per_week": round(body.get("weight_trend_kg_per_week") or 0, 2),
+    }
+
+
+def _coach_stats_with_overrides(payload: dict[str, Any], overrides: Any) -> dict[str, Any]:
+    stats = _coach_stats_from_payload(payload)
+    if isinstance(overrides, dict):
+        stats.update(overrides)
+    return stats
+
+
+def _serialize_recent_meal_context(rows: list[MealEntry]) -> list[dict[str, Any]]:
+    return [
+        {
+            "meal_type": row.meal_type,
+            "calories": row.total_calories,
+            "protein_g": row.total_protein_g,
+            "carbs_g": row.total_carbs_g,
+            "fat_g": row.total_fat_g,
+            "logged_at": row.logged_at.isoformat(),
+            "notes": row.notes,
+        }
+        for row in rows
+    ]
+
+
+def _serialize_recent_workout_context(rows: list[WorkoutSession]) -> list[dict[str, Any]]:
+    return [
+        {
+            "notes": row.notes,
+            "volume_kg": row.total_volume_kg,
+            "sets": row.total_sets,
+            "perceived_energy": row.perceived_energy,
+            "bodyweight_kg": row.bodyweight_kg,
+            "started_at": row.started_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+def _serialize_recent_weight_context(rows: list[WeightEntry]) -> list[dict[str, Any]]:
+    return [
+        {
+            "weight_kg": row.weight_kg,
+            "body_fat_pct": row.body_fat_pct,
+            "waist_cm": row.waist_cm,
+            "logged_at": row.logged_at.isoformat(),
+            "notes": row.notes,
+        }
+        for row in rows
+    ]
+
+
+def _serialize_goal_context(rows: list[Goal]) -> list[dict[str, Any]]:
+    return [
+        {
+            "title": row.title,
+            "category": row.category,
+            "metric_key": row.metric_key,
+            "target_value": row.target_value,
+            "unit": row.unit,
+            "period": row.period,
+            "notes": row.notes,
+        }
+        for row in rows
+    ]
+
+
+def _load_coach_context(session: Session, user_id: str, insight_payload: dict[str, Any]) -> dict[str, Any]:
     recent_meals = session.scalars(
         select(MealEntry).where(MealEntry.user_id == user_id, MealEntry.deleted_at.is_(None)).order_by(MealEntry.logged_at.desc()).limit(5)
     ).all()
@@ -1109,31 +1200,69 @@ def generate_coach_brief(session: Session, user_id: str, insight_payload: dict[s
     active_goals = session.scalars(
         select(Goal).where(Goal.user_id == user_id, Goal.deleted_at.is_(None), Goal.is_active.is_(True)).order_by(Goal.created_at.desc())
     ).all()
+    return {
+        "nutrition_snapshot": insight_payload.get("nutrition", {}),
+        "body_snapshot": insight_payload.get("body", {}),
+        "training_snapshot": insight_payload.get("training", {}),
+        "recovery_flags": insight_payload.get("recovery_flags", []),
+        "recommendations": insight_payload.get("recommendations", []),
+        "coach_stats": _coach_stats_from_payload(insight_payload),
+        "recent_meals": _serialize_recent_meal_context(recent_meals),
+        "recent_workouts": _serialize_recent_workout_context(recent_workouts),
+        "recent_weights": _serialize_recent_weight_context(recent_weights),
+        "goals": _serialize_goal_context(active_goals),
+    }
 
-    context_prompt = (
-        f"Persona: {persona.display_name} - {persona.tagline}\n"
-        f"Nutrition snapshot: {json.dumps(insight_payload.get('nutrition', {}), default=str)}\n"
-        f"Body snapshot: {json.dumps(insight_payload.get('body', {}), default=str)}\n"
-        f"Training snapshot: {json.dumps(insight_payload.get('training', {}), default=str)}\n"
-        f"Recovery flags: {json.dumps(insight_payload.get('recovery_flags', []), default=str)}\n"
-        f"Recommendations: {json.dumps(insight_payload.get('recommendations', []), default=str)}\n"
-        f"Recent meals: {json.dumps([{'meal_type': row.meal_type, 'calories': row.total_calories, 'logged_at': row.logged_at.isoformat()} for row in recent_meals], default=str)}\n"
-        f"Recent workouts: {json.dumps([{'notes': row.notes, 'volume': row.total_volume_kg, 'sets': row.total_sets, 'started_at': row.started_at.isoformat()} for row in recent_workouts], default=str)}\n"
-        f"Recent weights: {json.dumps([{'weight_kg': row.weight_kg, 'logged_at': row.logged_at.isoformat()} for row in recent_weights], default=str)}\n"
-        f"Goals: {json.dumps([{'title': row.title, 'metric_key': row.metric_key, 'target_value': row.target_value, 'unit': row.unit} for row in active_goals], default=str)}"
+
+def _coach_default_system_prompt(persona: AiPersonaConfig) -> str:
+    return (
+        f"{persona.system_prompt.strip()}\n\n"
+        "You are the user's dedicated strength, nutrition, body-composition, and recovery coach inside FitnessPal. "
+        "Give tailored coaching, not generic wellness advice. Prioritize the athlete's active goals, recent adherence, "
+        "training stress, recovery flags, and bodyweight trend. Use only the supplied context. If something is unknown, "
+        "say it is unknown and ask for the next most useful check-in. Keep the tone direct, sharp, supportive, and "
+        "practical. Avoid fluff, avoid medical claims, and never imply that you already changed the athlete's data.\n\n"
+        f"Coach voice guidelines: {json.dumps(persona.voice_guidelines_json or {}, default=str)}"
     )
+
+
+def _build_coach_context_prompt(persona: AiPersonaConfig, context: dict[str, Any], *, athlete_request: str, task: str) -> str:
+    context_payload = {
+        "persona": {
+            "display_name": persona.display_name,
+            "tagline": persona.tagline,
+        },
+        "task": task,
+        "athlete_request": athlete_request.strip(),
+        "context": context,
+    }
+    return (
+        "Use the context JSON below to answer the athlete. Tailor the response to the athlete_request, "
+        "prioritize the next 24 to 72 hours, and call out missing context when it matters.\n\n"
+        f"{json.dumps(context_payload, default=str)}"
+    )
+
+
+def generate_coach_brief(session: Session, user_id: str, insight_payload: dict[str, Any]) -> dict[str, Any]:
+    persona = get_persona_config(session)
+    context = _load_coach_context(session, user_id, insight_payload)
 
     try:
         resolved = resolve_feature(session, "coach_brief")
         parsed = _request_feature_json(
             resolved,
             system_prompt=(
-                f"{persona.system_prompt}\n\n"
-                "Generate a grounded coach brief from the provided fitness data. Return strict JSON only with this shape: "
+                f"{_coach_default_system_prompt(persona)}\n\n"
+                "Generate a grounded daily coach brief from the provided fitness data. Return strict JSON only with this shape: "
                 '{"title":"string","summary":"string","body_markdown":"string","actions":["string"],"stats":{"key":"value"}}. '
-                "Keep it concise, useful, and brandable. Do not pretend to know data that is not present."
+                "Keep it concise, high-signal, and specific to the athlete's current logs. Do not pretend to know data that is not present."
             ),
-            user_prompt=context_prompt,
+            user_prompt=_build_coach_context_prompt(
+                persona,
+                context,
+                athlete_request="Give me today's coach read and the next moves that matter most.",
+                task="Generate a concise daily coach brief from the current fitness logs.",
+            ),
         )
         return {
             "source": "ai",
@@ -1142,12 +1271,93 @@ def generate_coach_brief(session: Session, user_id: str, insight_payload: dict[s
             "title": str(parsed.get("title") or "Daily Brief"),
             "summary": str(parsed.get("summary") or ""),
             "body_markdown": str(parsed.get("body_markdown") or ""),
-            "actions_json": [str(item) for item in (parsed.get("actions") or [])],
-            "stats_json": dict(parsed.get("stats") or {}),
+            "actions_json": _string_list(parsed.get("actions")),
+            "stats_json": _coach_stats_with_overrides(insight_payload, parsed.get("stats")),
             "error_message": None,
         }
     except Exception:
         return _coach_brief_fallback(persona, insight_payload)
+
+
+def _coach_advice_fallback(persona: AiPersonaConfig, athlete_request: str, payload: dict[str, Any]) -> dict[str, Any]:
+    recommendations = _string_list(payload.get("recommendations"))
+    recovery_flags = _string_list(payload.get("recovery_flags"))
+    focus_area = "Recovery management" if recovery_flags else ("Primary lever" if recommendations else "Consistency")
+    primary_take = recovery_flags[0] if recovery_flags else (
+        recommendations[0] if recommendations else "stay consistent with logging, meals, and the next planned session"
+    )
+    actions = recommendations[:3] or [
+        "Keep the next meal high in protein and close to your normal calorie target.",
+        "Make the next workout technically clean before adding more load.",
+        "Log the next weigh-in under the same conditions so the trend stays useful.",
+    ]
+    watchouts = recovery_flags[:3]
+    follow_up_prompt = (
+        "How did your last training session feel for energy, pumps, and recovery?"
+        if recovery_flags
+        else "Which part of the day is hardest for you to stay on plan with right now?"
+    )
+    return {
+        "source": "deterministic",
+        "provider": None,
+        "model_name": None,
+        "question": athlete_request.strip(),
+        "title": "Coach answer",
+        "summary": f"{persona.display_name}: the main focus right now is to {primary_take[0].lower() + primary_take[1:] if primary_take else 'stay steady.'}",
+        "body_markdown": (
+            f"Question: {athlete_request.strip()}\n\n"
+            f"Based on the current logs, the clearest coaching priority is to {primary_take[0].lower() + primary_take[1:] if primary_take else 'stay consistent.'} "
+            "Treat the next 24 to 72 hours as an execution block instead of chasing random changes."
+        ),
+        "actions": actions,
+        "watchouts": watchouts,
+        "focus_area": focus_area,
+        "follow_up_prompt": follow_up_prompt,
+        "stats": _coach_stats_from_payload(payload),
+        "generated_at": utcnow().isoformat(),
+    }
+
+
+def generate_coach_advice(session: Session, user_id: str, insight_payload: dict[str, Any], athlete_request: str) -> dict[str, Any]:
+    persona = get_persona_config(session)
+    cleaned_request = athlete_request.strip()
+    context = _load_coach_context(session, user_id, insight_payload)
+
+    try:
+        resolved = resolve_feature(session, "coach_brief")
+        parsed = _request_feature_json(
+            resolved,
+            system_prompt=(
+                f"{_coach_default_system_prompt(persona)}\n\n"
+                "Answer the athlete's question as their in-app coach. Return strict JSON only with this shape: "
+                '{"title":"string","summary":"string","body_markdown":"string","actions":["string"],'
+                '"watchouts":["string"],"focus_area":"string","follow_up_prompt":"string","stats":{"key":"value"}}. '
+                "Give a tailored answer, explain the coaching logic briefly, and keep the advice grounded in the supplied data."
+            ),
+            user_prompt=_build_coach_context_prompt(
+                persona,
+                context,
+                athlete_request=cleaned_request,
+                task="Answer the athlete's question with tailored coaching based on the current fitness logs.",
+            ),
+        )
+        return {
+            "source": "ai",
+            "provider": resolved.profile.provider if resolved.profile else None,
+            "model_name": resolved.model,
+            "question": cleaned_request,
+            "title": str(parsed.get("title") or "Coach answer"),
+            "summary": str(parsed.get("summary") or ""),
+            "body_markdown": str(parsed.get("body_markdown") or ""),
+            "actions": _string_list(parsed.get("actions")),
+            "watchouts": _string_list(parsed.get("watchouts")),
+            "focus_area": str(parsed.get("focus_area") or "Coach read"),
+            "follow_up_prompt": str(parsed.get("follow_up_prompt") or "").strip() or None,
+            "stats": _coach_stats_with_overrides(insight_payload, parsed.get("stats")),
+            "generated_at": utcnow().isoformat(),
+        }
+    except Exception:
+        return _coach_advice_fallback(persona, cleaned_request, insight_payload)
 
 
 def get_latest_coach_brief(session: Session, user_id: str) -> CoachBrief | None:

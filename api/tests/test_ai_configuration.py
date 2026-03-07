@@ -393,6 +393,56 @@ class AiConfigurationTests(unittest.TestCase):
         self.assertEqual(ai_row.provider, "openai")
         self.assertEqual(ai_row.model_name, "gpt-4.1-mini")
 
+    def test_assistant_advice_uses_default_coach_prompt(self) -> None:
+        with self.SessionLocal() as session:
+            profile = self._create_profile(
+                session,
+                name="Coach cloud",
+                provider="openai",
+                base_url="https://api.openai.com/v1",
+                api_key="sk-advice-secret",
+                default_model="gpt-4.1-mini",
+            )
+            local_ai.upsert_feature_bindings(
+                session,
+                [{"feature_key": "coach_brief", "profile_id": profile["id"], "model": "gpt-4.1-mini"}],
+            )
+            self._seed_snapshot(session)
+
+        self.current_actor = self.user_actor
+        captured: dict[str, str] = {}
+
+        def fake_request(resolved, **kwargs: object) -> dict[str, object]:
+            assert resolved.profile is not None
+            captured["system_prompt"] = str(kwargs["system_prompt"])
+            captured["user_prompt"] = str(kwargs["user_prompt"])
+            return {
+                "title": "Upper-day check-in",
+                "summary": "Your next upper session should be about owning rep quality, not forcing more load.",
+                "body_markdown": "Keep calories steady, hit protein early, and aim for cleaner execution on the first compound lift.",
+                "actions": [
+                    "Eat a protein-forward meal 2 to 3 hours before training.",
+                    "Repeat the last top set and beat it with cleaner reps.",
+                ],
+                "watchouts": ["Do not treat one flat session as a sign you need a full program change."],
+                "focus_area": "Upper-day execution",
+                "follow_up_prompt": "How did your last upper session feel by the final working set?",
+                "stats": {"weekly_volume_kg": 5420},
+            }
+
+        with patch("app.core.local_ai._request_feature_json", side_effect=fake_request):
+            response = self.client.post("/assistant/advice", json={"prompt": "What should I focus on before my next upper day?"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["advice"]
+        self.assertEqual(payload["source"], "ai")
+        self.assertEqual(payload["provider"], "openai")
+        self.assertEqual(payload["model_name"], "gpt-4.1-mini")
+        self.assertEqual(payload["focus_area"], "Upper-day execution")
+        self.assertEqual(payload["question"], "What should I focus on before my next upper day?")
+        self.assertIn("dedicated strength, nutrition, body-composition, and recovery coach", captured["system_prompt"])
+        self.assertIn("What should I focus on before my next upper day?", captured["user_prompt"])
+
     def test_manifest_route_is_removed_from_main_app(self) -> None:
         from app.main import app, root
 

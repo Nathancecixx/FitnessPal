@@ -165,8 +165,8 @@ export function AppShell() {
         <aside className="sticky top-4 hidden h-[calc(100vh-2rem)] self-start rounded-[32px] bg-slate-950/95 p-6 text-white shadow-halo backdrop-blur lg:flex lg:flex-col">
           <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
             <div className="text-xs uppercase tracking-[0.35em] text-amber-300/75">FitnessPal</div>
-            <div className="mt-3 font-display text-3xl leading-none">Daily tracking with a coach persona</div>
-            <p className="mt-3 text-sm leading-6 text-slate-300">Quick daily entries up front. Brandable AI coaching and deeper builders where you need them.</p>
+            <div className="mt-3 font-display text-3xl leading-none">Daily tracking with AI coach</div>
+            <p className="mt-3 text-sm leading-6 text-slate-300">Quick daily entries. AI coaching and analytics where you may need.</p>
           </div>
 
           <nav className="mt-8 space-y-2">
