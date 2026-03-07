@@ -61,6 +61,7 @@ class AiProfileUpdate(BaseModel):
     description: str | None = None
     api_key: str | None = None
     clear_api_key: bool = False
+    clear_default_headers: bool = False
     default_model: str | None = None
     timeout_seconds: int | None = None
     is_enabled: bool | None = None

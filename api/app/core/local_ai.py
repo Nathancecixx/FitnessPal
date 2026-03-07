@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from base64 import b64encode
 from dataclasses import dataclass
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 import json
 import re
 from typing import Any
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import httpx
 from sqlalchemy import select
@@ -14,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.config_crypto import decrypt_secret_payload, encrypt_secret_payload
 from app.core.models import AiFeatureBinding, AiPersonaConfig, AiProfile, CoachBrief, Goal, InsightSnapshot, MealEntry, WeightEntry, WorkoutSession, utcnow
+from app.core.storage import ensure_managed_upload_path
 
 
 settings = get_settings()
@@ -44,6 +47,7 @@ DEFAULT_PERSONA = {
     },
 }
 _LEGACY_PROFILE_ID = "legacy-local-ai"
+_MASKED_HEADER_VALUE = "[redacted]"
 
 
 class AiConfigurationError(RuntimeError):
@@ -100,14 +104,71 @@ def _split_headers(raw: dict[str, Any]) -> dict[str, str]:
     return {str(key): str(value) for key, value in raw.items() if value not in ("", None)}
 
 
-def _secret_payload_for_profile(api_key: str | None) -> str | None:
-    if not api_key:
+def _mask_headers(default_headers: dict[str, str]) -> dict[str, str]:
+    return {key: _MASKED_HEADER_VALUE for key in default_headers}
+
+
+def _secret_payload_for_profile(api_key: str | None, default_headers: dict[str, str] | None = None) -> str | None:
+    payload: dict[str, object] = {}
+    if api_key:
+        payload["api_key"] = api_key
+    if default_headers:
+        payload["default_headers"] = default_headers
+    if not payload:
         return None
-    return encrypt_secret_payload({"api_key": api_key})
+    return encrypt_secret_payload(payload)
+
+
+def _is_allowed_ai_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    normalized_host = hostname.strip().lower()
+    for allowed_host in settings.allowed_ai_hosts:
+        candidate = allowed_host.strip().lower()
+        if not candidate:
+            continue
+        if candidate == "*":
+            return True
+        if "/" in candidate:
+            try:
+                if ip_address(normalized_host) in ip_network(candidate, strict=False):
+                    return True
+            except ValueError:
+                continue
+        if candidate.startswith(".") and normalized_host.endswith(candidate):
+            return True
+        if normalized_host == candidate:
+            return True
+    return False
+
+
+def _normalize_base_url(base_url: str) -> str:
+    parsed = urlsplit(base_url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise AiConfigurationError("AI profile URLs must use http or https.")
+    if not parsed.netloc or not parsed.hostname:
+        raise AiConfigurationError("AI profile URLs must include a hostname.")
+    if parsed.username or parsed.password:
+        raise AiConfigurationError("AI profile URLs must not contain embedded credentials.")
+    if parsed.query or parsed.fragment:
+        raise AiConfigurationError("AI profile URLs must not include query strings or fragments.")
+    if not _is_allowed_ai_host(parsed.hostname):
+        raise AiConfigurationError(
+            "AI profile host is not allowed. Add it to FITNESSPAL_ALLOWED_AI_HOSTS before saving this profile."
+        )
+    normalized = SplitResult(parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
+    return urlunsplit(normalized)
 
 
 def _resolved_profile_from_row(row: AiProfile) -> ResolvedAiProfile:
     secret_payload = decrypt_secret_payload(row.api_key_encrypted)
+    encrypted_headers = secret_payload.get("default_headers")
+    decrypted_headers = _split_headers(encrypted_headers) if isinstance(encrypted_headers, dict) else {}
+    fallback_headers = {
+        key: value
+        for key, value in _split_headers(row.default_headers_json or {}).items()
+        if value != _MASKED_HEADER_VALUE
+    }
     return ResolvedAiProfile(
         id=row.id,
         name=row.name,
@@ -118,7 +179,7 @@ def _resolved_profile_from_row(row: AiProfile) -> ResolvedAiProfile:
         timeout_seconds=row.timeout_seconds,
         is_enabled=row.is_enabled,
         is_read_only=row.is_read_only,
-        default_headers=_split_headers(row.default_headers_json or {}),
+        default_headers=decrypted_headers or fallback_headers,
         advanced_settings=dict(row.advanced_settings_json or {}),
         models=[str(item) for item in (row.models_json or [])],
         last_reachable=row.last_reachable,
@@ -139,11 +200,12 @@ def _detect_legacy_provider(base_url: str) -> str:
 def _legacy_profile() -> ResolvedAiProfile | None:
     if not settings.local_ai_base_url:
         return None
+    normalized_base_url = _normalize_base_url(settings.local_ai_base_url)
     return ResolvedAiProfile(
         id=_LEGACY_PROFILE_ID,
         name="Legacy local AI",
-        provider=_detect_legacy_provider(settings.local_ai_base_url),
-        base_url=settings.local_ai_base_url,
+        provider=_detect_legacy_provider(normalized_base_url),
+        base_url=normalized_base_url,
         api_key=None,
         default_model=settings.local_ai_model,
         timeout_seconds=settings.local_ai_timeout_seconds,
@@ -216,6 +278,16 @@ def serialize_persona(persona: AiPersonaConfig) -> dict[str, Any]:
     }
 
 
+def serialize_persona_summary(persona: AiPersonaConfig) -> dict[str, Any]:
+    return {
+        "id": persona.id,
+        "config_key": persona.config_key,
+        "display_name": persona.display_name,
+        "tagline": persona.tagline,
+        "updated_at": persona.updated_at.isoformat(),
+    }
+
+
 def _stored_profile_rows(session: Session) -> list[AiProfile]:
     return session.scalars(select(AiProfile).order_by(AiProfile.created_at.asc())).all()
 
@@ -235,7 +307,9 @@ def serialize_profile_summary(profile: ResolvedAiProfile) -> dict[str, Any]:
         "timeout_seconds": profile.timeout_seconds,
         "is_enabled": profile.is_enabled,
         "is_read_only": profile.is_read_only,
-        "default_headers_json": profile.default_headers,
+        "default_headers_json": {},
+        "custom_header_keys": sorted(profile.default_headers.keys()),
+        "has_custom_headers": bool(profile.default_headers),
         "advanced_settings_json": profile.advanced_settings,
         "models_json": profile.models,
         "last_reachable": profile.last_reachable,
@@ -286,16 +360,18 @@ def create_profile(
     advanced_settings_json: dict[str, Any],
 ) -> dict[str, Any]:
     normalized_provider = _normalize_provider(provider)
+    normalized_base_url = _normalize_base_url(base_url)
+    default_headers = _split_headers(default_headers_json)
     row = AiProfile(
         name=name.strip(),
         provider=normalized_provider,
-        base_url=base_url.strip(),
+        base_url=normalized_base_url,
         description=description.strip() if description else None,
-        api_key_encrypted=_secret_payload_for_profile(api_key.strip()) if api_key else None,
+        api_key_encrypted=_secret_payload_for_profile(api_key.strip() if api_key else None, default_headers),
         default_model=default_model.strip() if default_model else None,
         timeout_seconds=timeout_seconds,
         is_enabled=is_enabled,
-        default_headers_json=_split_headers(default_headers_json),
+        default_headers_json=_mask_headers(default_headers),
         advanced_settings_json=dict(advanced_settings_json or {}),
         models_json=[],
         last_reachable=False,
@@ -316,6 +392,7 @@ def update_profile(
     description: str | None = None,
     api_key: str | None = None,
     clear_api_key: bool = False,
+    clear_default_headers: bool = False,
     default_model: str | None = None,
     timeout_seconds: int | None = None,
     is_enabled: bool | None = None,
@@ -332,7 +409,7 @@ def update_profile(
     if provider is not None:
         row.provider = _normalize_provider(provider)
     if base_url is not None:
-        row.base_url = base_url.strip()
+        row.base_url = _normalize_base_url(base_url)
     if description is not None:
         row.description = description.strip() or None
     if default_model is not None:
@@ -341,14 +418,29 @@ def update_profile(
         row.timeout_seconds = timeout_seconds
     if is_enabled is not None:
         row.is_enabled = is_enabled
-    if default_headers_json is not None:
-        row.default_headers_json = _split_headers(default_headers_json)
+    secret_payload = decrypt_secret_payload(row.api_key_encrypted)
+    api_key_value = str(secret_payload.get("api_key")) if secret_payload.get("api_key") else None
+    default_headers = (
+        _split_headers(secret_payload.get("default_headers"))
+        if isinstance(secret_payload.get("default_headers"), dict)
+        else {
+            key: value
+            for key, value in _split_headers(row.default_headers_json or {}).items()
+            if value != _MASKED_HEADER_VALUE
+        }
+    )
     if advanced_settings_json is not None:
         row.advanced_settings_json = dict(advanced_settings_json)
+    if clear_default_headers:
+        default_headers = {}
+    elif default_headers_json is not None:
+        default_headers = _split_headers(default_headers_json)
     if clear_api_key:
-        row.api_key_encrypted = None
+        api_key_value = None
     elif api_key is not None:
-        row.api_key_encrypted = _secret_payload_for_profile(api_key.strip()) if api_key.strip() else None
+        api_key_value = api_key.strip() or None
+    row.api_key_encrypted = _secret_payload_for_profile(api_key_value, default_headers)
+    row.default_headers_json = _mask_headers(default_headers)
     session.commit()
     session.refresh(row)
     return serialize_profile_summary(_resolved_profile_from_row(row))
@@ -513,20 +605,22 @@ def _image_media_type(image_path: Path) -> str:
 
 
 def _build_openai_image_content(image_path: Path) -> dict[str, Any]:
-    encoded_image = b64encode(image_path.read_bytes()).decode("utf-8")
+    safe_path = ensure_managed_upload_path(image_path)
+    encoded_image = b64encode(safe_path.read_bytes()).decode("utf-8")
     return {
         "type": "image_url",
-        "image_url": {"url": f"data:{_image_media_type(image_path)};base64,{encoded_image}"},
+        "image_url": {"url": f"data:{_image_media_type(safe_path)};base64,{encoded_image}"},
     }
 
 
 def _build_anthropic_image_content(image_path: Path) -> dict[str, Any]:
+    safe_path = ensure_managed_upload_path(image_path)
     return {
         "type": "image",
         "source": {
             "type": "base64",
-            "media_type": _image_media_type(image_path),
-            "data": b64encode(image_path.read_bytes()).decode("utf-8"),
+            "media_type": _image_media_type(safe_path),
+            "data": b64encode(safe_path.read_bytes()).decode("utf-8"),
         },
     }
 
@@ -582,7 +676,7 @@ def _request_openai_compatible_json(
         payload["max_tokens"] = payload.pop("max_output_tokens")
     else:
         payload.pop("max_output_tokens", None)
-    with httpx.Client(timeout=_request_timeout(profile), headers=_openai_headers(profile)) as client:
+    with httpx.Client(timeout=_request_timeout(profile), headers=_openai_headers(profile), follow_redirects=False) as client:
         response = client.post(_chat_completions_url(profile.base_url), json=payload)
         response.raise_for_status()
         data = response.json()
@@ -618,7 +712,7 @@ def _request_anthropic_json(
             if key not in {"max_output_tokens", "max_tokens", "temperature", "top_p"} and value is not None
         }
     )
-    with httpx.Client(timeout=_request_timeout(profile), headers=_anthropic_headers(profile)) as client:
+    with httpx.Client(timeout=_request_timeout(profile), headers=_anthropic_headers(profile), follow_redirects=False) as client:
         response = client.post(_chat_completions_url(profile.base_url).rsplit("/chat/completions", 1)[0] + "/messages", json=payload)
         response.raise_for_status()
         data = response.json()
@@ -663,7 +757,7 @@ def _request_feature_json(
 
 
 def _list_openai_models(profile: ResolvedAiProfile) -> list[str]:
-    with httpx.Client(timeout=min(_request_timeout(profile), 15), headers=_openai_headers(profile)) as client:
+    with httpx.Client(timeout=min(_request_timeout(profile), 15), headers=_openai_headers(profile), follow_redirects=False) as client:
         response = client.get(_models_url(profile.base_url))
         response.raise_for_status()
         data = response.json()
@@ -671,7 +765,7 @@ def _list_openai_models(profile: ResolvedAiProfile) -> list[str]:
 
 
 def _list_anthropic_models(profile: ResolvedAiProfile) -> list[str]:
-    with httpx.Client(timeout=min(_request_timeout(profile), 15), headers=_anthropic_headers(profile)) as client:
+    with httpx.Client(timeout=min(_request_timeout(profile), 15), headers=_anthropic_headers(profile), follow_redirects=False) as client:
         response = client.get(_anthropic_models_url(profile.base_url))
         response.raise_for_status()
         data = response.json()
@@ -679,7 +773,7 @@ def _list_anthropic_models(profile: ResolvedAiProfile) -> list[str]:
 
 
 def _list_ollama_models(profile: ResolvedAiProfile) -> list[str]:
-    with httpx.Client(timeout=min(_request_timeout(profile), 15), headers=profile.default_headers) as client:
+    with httpx.Client(timeout=min(_request_timeout(profile), 15), headers=profile.default_headers, follow_redirects=False) as client:
         try:
             response = client.get(_ollama_tags_url(profile.base_url))
             response.raise_for_status()
@@ -814,12 +908,13 @@ def resolve_feature(session: Session, feature_key: str) -> ResolvedAiFeature:
     )
 
 
-def inspect_ai_runtime(session: Session) -> dict[str, Any]:
+def inspect_ai_runtime(session: Session, *, include_admin_details: bool = False) -> dict[str, Any]:
     ensure_ai_defaults(session)
-    persona = serialize_persona(get_persona_config(session))
-    profiles = list_profiles(session)
-    bindings = get_feature_bindings(session)
-    configured_features = [binding["feature_key"] for binding in bindings if binding["profile"]]
+    persona = serialize_persona_summary(get_persona_config(session))
+    all_bindings = get_feature_bindings(session)
+    profiles = list_profiles(session) if include_admin_details else []
+    bindings = all_bindings if include_admin_details else []
+    configured_features = [binding["feature_key"] for binding in all_bindings if binding["profile"]]
     return {
         "profiles": profiles,
         "features": bindings,

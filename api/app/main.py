@@ -3,11 +3,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import ensure_secure_runtime_settings, get_settings
 from app.core.database import get_session, init_db, session_scope
 from app.core.local_ai import ensure_ai_defaults
 from app.core.schemas import DashboardCardState
@@ -22,6 +22,7 @@ manifests = load_manifests()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    ensure_secure_runtime_settings()
     ensure_storage_dirs()
     init_db()
     with session_scope() as session:
@@ -44,6 +45,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_api_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(settings.api_prefix):
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("Pragma", "no-cache")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
 
 api_router = APIRouter(prefix=settings.api_prefix)
 for manifest in manifests:

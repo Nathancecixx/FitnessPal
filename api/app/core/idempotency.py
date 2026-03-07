@@ -8,12 +8,27 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy import select
 
+from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.models import IdempotencyRecord
 from app.core.security import resolve_actor_from_credentials
 
 
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+NON_REPLAYABLE_PATH_SUFFIXES = (
+    "/auth/login",
+    "/auth/password/setup",
+    "/api-keys",
+    "/users",
+)
+
+
+def _normalize_idempotency_path(path: str) -> str:
+    api_prefix = get_settings().api_prefix.rstrip("/")
+    if api_prefix and path.startswith(api_prefix):
+        trimmed = path[len(api_prefix) :]
+        return trimmed or "/"
+    return path
 
 
 class IdempotentRoute(APIRoute):
@@ -27,6 +42,12 @@ class IdempotentRoute(APIRoute):
             key = request.headers.get("Idempotency-Key")
             if not key:
                 return await original_handler(request)
+            normalized_path = _normalize_idempotency_path(request.url.path)
+            if any(normalized_path == suffix or normalized_path.startswith(f"{suffix}/") for suffix in NON_REPLAYABLE_PATH_SUFFIXES):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Idempotency-Key is not supported for routes that return one-time credentials or tokens.",
+                )
 
             body = await request.body()
             body_hash = hashlib.sha256(body).hexdigest()

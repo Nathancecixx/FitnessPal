@@ -40,7 +40,7 @@ export function SetupPasswordPage() {
           setupPassword.mutate()
         }}
         >
-          <LabelledInput label="New password" type="password" value={password} onChange={setPassword} placeholder="At least 8 characters" />
+          <LabelledInput label="New password" type="password" value={password} onChange={setPassword} placeholder="At least 12 characters" />
           <LabelledInput label="Confirm password" type="password" value={confirmPassword} onChange={setConfirmPassword} placeholder="Repeat password" />
           {password && confirmPassword && password !== confirmPassword ? (
             <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">Passwords do not match.</div>
@@ -51,7 +51,7 @@ export function SetupPasswordPage() {
           {setupPassword.isSuccess ? (
             <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-900">Password saved. Redirecting...</div>
           ) : null}
-          <ActionButton type="submit" disabled={setupPassword.isPending || password.length < 8 || password !== confirmPassword}>
+          <ActionButton type="submit" disabled={setupPassword.isPending || password.length < 12 || password !== confirmPassword}>
             Save password
           </ActionButton>
         </form>

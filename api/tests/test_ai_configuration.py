@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.config_crypto import decrypt_secret_payload
 from app.core.database import Base, get_session
 from app.core.models import AiProfile, AppUser, Goal, InsightSnapshot, MealEntry, WeightEntry, WorkoutSession
-from app.core.security import Actor, get_actor, hash_password
+from app.core.security import Actor, create_session_token, get_actor, hash_password, resolve_actor_from_credentials
 from app.modules.ai import router as ai_router
 from app.modules.platform import router as platform_router
 
@@ -25,17 +25,21 @@ from app.modules.platform import router as platform_router
 class AiConfigurationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_config_secret = os.environ.get("FITNESSPAL_CONFIG_SECRET")
-        os.environ["FITNESSPAL_CONFIG_SECRET"] = "test-config-secret"
+        self.original_allowed_ai_hosts = os.environ.get("FITNESSPAL_ALLOWED_AI_HOSTS")
+        os.environ["FITNESSPAL_CONFIG_SECRET"] = "test-config-secret-0123456789abcdef"
+        os.environ["FITNESSPAL_ALLOWED_AI_HOSTS"] = "api.openai.com,api.anthropic.com,.local,localhost,127.0.0.1,::1,host.docker.internal"
         get_settings.cache_clear()
 
         self.original_legacy_values = (
             local_ai.settings.local_ai_base_url,
             local_ai.settings.local_ai_model,
             local_ai.settings.local_ai_timeout_seconds,
+            local_ai.settings.allowed_ai_hosts,
         )
         object.__setattr__(local_ai.settings, "local_ai_base_url", None)
         object.__setattr__(local_ai.settings, "local_ai_model", "qwen3-vl:8b")
         object.__setattr__(local_ai.settings, "local_ai_timeout_seconds", 60)
+        object.__setattr__(local_ai.settings, "allowed_ai_hosts", (".local", "api.openai.com", "api.anthropic.com", "localhost", "127.0.0.1", "::1", "host.docker.internal"))
 
         self.engine = create_engine(
             "sqlite://",
@@ -108,10 +112,15 @@ class AiConfigurationTests(unittest.TestCase):
         object.__setattr__(local_ai.settings, "local_ai_base_url", self.original_legacy_values[0])
         object.__setattr__(local_ai.settings, "local_ai_model", self.original_legacy_values[1])
         object.__setattr__(local_ai.settings, "local_ai_timeout_seconds", self.original_legacy_values[2])
+        object.__setattr__(local_ai.settings, "allowed_ai_hosts", self.original_legacy_values[3])
         if self.original_config_secret is None:
             os.environ.pop("FITNESSPAL_CONFIG_SECRET", None)
         else:
             os.environ["FITNESSPAL_CONFIG_SECRET"] = self.original_config_secret
+        if self.original_allowed_ai_hosts is None:
+            os.environ.pop("FITNESSPAL_ALLOWED_AI_HOSTS", None)
+        else:
+            os.environ["FITNESSPAL_ALLOWED_AI_HOSTS"] = self.original_allowed_ai_hosts
         get_settings.cache_clear()
 
     def _create_profile(
@@ -236,6 +245,9 @@ class AiConfigurationTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["provider"], "openai")
         self.assertTrue(payload["has_api_key"])
+        self.assertTrue(payload["has_custom_headers"])
+        self.assertEqual(payload["default_headers_json"], {})
+        self.assertEqual(payload["custom_header_keys"], ["X-Test"])
         self.assertNotIn("api_key", payload)
         self.assertNotIn("sk-live-secret", response.text)
 
@@ -245,7 +257,10 @@ class AiConfigurationTests(unittest.TestCase):
             self.assertIsNotNone(row)
             assert row is not None
             self.assertNotEqual(row.api_key_encrypted, "sk-live-secret")
-            self.assertEqual(decrypt_secret_payload(row.api_key_encrypted)["api_key"], "sk-live-secret")
+            decrypted = decrypt_secret_payload(row.api_key_encrypted)
+            self.assertEqual(decrypted["api_key"], "sk-live-secret")
+            self.assertEqual(decrypted["default_headers"], {"X-Test": "1"})
+            self.assertEqual(row.default_headers_json, {"X-Test": "[redacted]"})
 
         with patch("app.core.local_ai.list_models_for_profile", return_value=["gpt-4.1-mini", "gpt-4o-mini"]):
             test_response = self.client.post(f"/ai/profiles/{profile_id}/test")
@@ -318,6 +333,14 @@ class AiConfigurationTests(unittest.TestCase):
         self.assertEqual(captured["meal_photo_estimation"], ("openai", "gpt-4o-mini"))
         self.assertEqual(runtime.status_code, 200)
         self.assertEqual(runtime.json()["ai"]["configured_feature_count"], 2)
+
+        self.current_actor = self.user_actor
+        user_runtime = self.client.get("/runtime")
+
+        self.assertEqual(user_runtime.status_code, 200)
+        self.assertEqual(user_runtime.json()["ai"]["profiles"], [])
+        self.assertEqual(user_runtime.json()["ai"]["features"], [])
+        self.assertNotIn("system_prompt", user_runtime.json()["ai"]["persona"])
 
     def test_fallback_parser_and_label_scan_setup_errors_behave_as_expected(self) -> None:
         with self.SessionLocal() as session:
@@ -450,6 +473,25 @@ class AiConfigurationTests(unittest.TestCase):
 
         self.assertNotIn("/.well-known/fitnesspal-agent.json", paths)
         self.assertNotIn("agent_manifest", root())
+
+    def test_session_tokens_do_not_authenticate_as_bearer_tokens(self) -> None:
+        with self.SessionLocal() as session:
+            user = session.get(AppUser, self.admin_actor.user_id)
+            assert user is not None
+            token = create_session_token(session, user)
+            actor = resolve_actor_from_credentials(session, authorization=f"Bearer {token}")
+
+        self.assertIsNone(actor)
+
+    def test_idempotency_is_rejected_for_one_time_credential_routes(self) -> None:
+        response = self.client.post(
+            "/users",
+            headers={"Idempotency-Key": "same-request"},
+            json={"username": "bob", "is_admin": False},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Idempotency-Key is not supported", response.text)
 
 
 if __name__ == "__main__":

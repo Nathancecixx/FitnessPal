@@ -5,6 +5,7 @@ import time
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.config import ensure_secure_runtime_settings
 from app.core.database import session_scope
 from app.core.jobs import claim_next_job, complete_job, ensure_daily_jobs, fail_job
 from app.modules import load_manifests
@@ -42,6 +43,7 @@ def run_once() -> bool:
 
 
 def main() -> None:
+    ensure_secure_runtime_settings()
     logger.info("Worker started")
     while True:
         try:

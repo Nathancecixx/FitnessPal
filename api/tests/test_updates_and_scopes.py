@@ -18,6 +18,7 @@ from app.core.models import (
     MealEntryItem,
     MealTemplate,
     MealTemplateItem,
+    PhotoAnalysisDraft,
     SetEntry,
     WeightEntry,
     WorkoutSession,
@@ -25,7 +26,7 @@ from app.core.models import (
     WorkoutTemplateExercise,
 )
 from app.core.security import Actor, require_scope
-from app.core.serialization import restore_payload
+from app.core.serialization import export_payload, restore_payload
 from app.modules.metrics import WeightEntryCreate, WeightEntryUpdate, create_weight_entry, update_weight_entry
 from app.modules.nutrition import (
     MealCreate,
@@ -357,6 +358,56 @@ class UpdateAndScopeTests(unittest.TestCase):
         self.assertEqual(updated["body_fat_pct"], 15.8)
         self.assertEqual(updated["notes"], "after")
         self.assertEqual(entry.waist_cm, 83.2)
+
+    def test_export_and_restore_drop_photo_draft_links(self) -> None:
+        with self.SessionLocal() as session:
+            draft = PhotoAnalysisDraft(
+                user_id=self.actor.user_id,
+                status="ready",
+                source_path="storage/uploads/user-test/meal-photos/example.jpg",
+                candidates_json=[],
+            )
+            session.add(draft)
+            session.flush()
+            meal = MealEntry(
+                user_id=self.actor.user_id,
+                meal_type="meal",
+                source="photo",
+                total_calories=540,
+                total_protein_g=40,
+                total_carbs_g=50,
+                total_fat_g=18,
+                photo_draft_id=draft.id,
+            )
+            session.add(meal)
+            session.commit()
+            session.refresh(meal)
+
+            exported = export_payload(session, self.actor.user_id)
+            exported_meal = exported["tables"]["meal_entries"][0]
+            self.assertNotIn("photo_analysis_drafts", exported["tables"])
+            self.assertIsNone(exported_meal["photo_draft_id"])
+
+            restore_payload(
+                session,
+                {
+                    "tables": {
+                        "meal_entries": [{**exported_meal, "photo_draft_id": draft.id}],
+                    }
+                },
+                self.actor.user_id,
+            )
+            restored = session.get(MealEntry, meal.id)
+
+        self.assertIsNotNone(restored)
+        self.assertIsNone(restored.photo_draft_id)
+
+    def test_restore_payload_rejects_malformed_tables(self) -> None:
+        with self.SessionLocal() as session:
+            with self.assertRaises(ValueError) as error:
+                restore_payload(session, {"tables": {"food_items": {}}}, self.actor.user_id)
+
+        self.assertIn("must be a list", str(error.exception))
 
     def test_restore_payload_rolls_back_all_rows_when_any_row_is_invalid(self) -> None:
         payload = {

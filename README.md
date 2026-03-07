@@ -100,7 +100,7 @@ Not fully mature yet:
 - coach brief generation at `GET /api/v1/assistant/brief`
 - export and restore flows for local backups
 - background job inspection from the UI
-- runtime inspection including configured AI profiles, feature routing, and persona metadata
+- runtime inspection with admin-only AI profile details plus per-user job and export status
 
 ## Architecture
 
@@ -174,6 +174,18 @@ On macOS or Linux:
 cp .env.example .env
 ```
 
+Before you start the stack, replace the placeholder secrets in `.env`.
+
+At minimum, set:
+
+- `FITNESSPAL_POSTGRES_PASSWORD`
+- `FITNESSPAL_DATABASE_URL`
+- `FITNESSPAL_ADMIN_PASSWORD` to a unique password with at least 12 characters
+
+If you plan to save OpenAI or Anthropic credentials in Settings, also set:
+
+- `FITNESSPAL_CONFIG_SECRET` to a random value with at least 32 characters
+
 ### 2. Start the stack
 
 ```bash
@@ -187,12 +199,16 @@ docker compose up --build -d
 - Health: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
 - OpenAPI: [http://localhost:8000/api/v1/openapi.json](http://localhost:8000/api/v1/openapi.json)
 
+Docker publishes these ports to `127.0.0.1` only. If you expose FitnessPal beyond localhost, put it behind HTTPS first.
+
 ### 4. Sign in
 
 Bootstrap admin credentials come from:
 
 - `FITNESSPAL_ADMIN_USERNAME`
 - `FITNESSPAL_ADMIN_PASSWORD`
+
+The bootstrap admin password must be a unique value with at least 12 characters when secure startup checks are enabled.
 
 After the admin signs in, additional users can be created from Settings. Each created user receives a one-time password setup link and only sees their own data.
 
@@ -213,7 +229,8 @@ Guided setup lives in Settings and supports advanced JSON overrides when a provi
 
 - `FITNESSPAL_CONFIG_SECRET` is required before saving cloud provider credentials
 - provider API keys are stored encrypted at rest
-- runtime responses redact secrets and only expose status metadata
+- runtime responses redact secrets, and detailed AI profile metadata is only returned to admins
+- AI base URLs must stay inside `FITNESSPAL_ALLOWED_AI_HOSTS`
 
 ### Legacy local AI fallback
 
@@ -325,10 +342,15 @@ The root `.env.example` is the easiest starting point for Docker-based developme
 | --- | --- | --- |
 | `FITNESSPAL_DATABASE_URL` | SQLAlchemy database URL | `postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal` |
 | `FITNESSPAL_ADMIN_USERNAME` | bootstrap admin username | `owner` |
-| `FITNESSPAL_ADMIN_PASSWORD` | bootstrap admin password | `fitnesspal` |
+| `FITNESSPAL_ADMIN_PASSWORD` | bootstrap admin password | set explicitly to a unique 12+ character value |
 | `FITNESSPAL_PASSWORD_SETUP_HOURS` | one-time password setup link lifetime | `72` |
 | `FITNESSPAL_ALLOW_ORIGINS` | CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080` |
-| `FITNESSPAL_CONFIG_SECRET` | encryption key for stored AI provider secrets | unset |
+| `FITNESSPAL_CONFIG_SECRET` | encryption key for stored AI provider secrets | set explicitly before saving cloud AI credentials |
+| `FITNESSPAL_ALLOWED_AI_HOSTS` | allow-list for outbound AI provider hosts | `api.openai.com,api.anthropic.com,localhost,127.0.0.1,::1,host.docker.internal` |
+| `FITNESSPAL_MAX_UPLOAD_BYTES` | server-side upload size limit | `8388608` |
+| `FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS` | failed login attempts allowed per window | `10` |
+| `FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | login rate-limit window in seconds | `900` |
+| `FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP` | reject insecure bootstrap secrets at startup | `true` |
 | `FITNESSPAL_LOCAL_AI_BASE_URL` | legacy read-only AI fallback base URL | `http://host.docker.internal:11434/v1` |
 | `FITNESSPAL_LOCAL_AI_MODEL` | legacy fallback model name | `qwen3-vl:8b` |
 | `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | legacy fallback timeout | `90` |
@@ -347,6 +369,8 @@ Frontend-only environment details are documented in [`web/README.md`](web/README
 - health: `GET /api/v1/health`
 - runtime info: `GET /api/v1/runtime`
 - job queue: `GET /api/v1/jobs`
+
+Non-admin runtime responses intentionally hide AI profile definitions and custom header metadata.
 
 ### Exports and restore
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import secrets
+import threading
+import time
 
 from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlalchemy import select
@@ -25,6 +28,9 @@ SESSION_SCOPES = (
     "insights:*",
     "assistant:use",
 )
+_LOGIN_RATE_LIMIT_LOCK = threading.Lock()
+_LOGIN_FAILURES_BY_IDENTITY: dict[str, deque[float]] = defaultdict(deque)
+_LOGIN_FAILURES_BY_IP: dict[str, deque[float]] = defaultdict(deque)
 
 
 @dataclass(slots=True)
@@ -63,6 +69,12 @@ def as_utc(value: datetime) -> datetime:
 
 
 def ensure_admin_user(session: Session) -> AppUser:
+    normalized_admin_password = settings.admin_password.strip().lower()
+    if settings.enforce_secure_bootstrap and (
+        normalized_admin_password in {"fitnesspal", "password", "changeme", "change-me", "admin", "owner"}
+        or len(settings.admin_password) < 12
+    ):
+        raise RuntimeError("FITNESSPAL_ADMIN_PASSWORD must be set to a unique value with at least 12 characters.")
     user = session.scalar(select(AppUser).where(AppUser.username == settings.admin_username))
     if not user:
         user = AppUser(
@@ -184,7 +196,55 @@ def change_password(session: Session, user: AppUser, current_password: str, new_
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect.")
     user.password_hash = hash_password(new_password)
     user.password_set_at = utcnow()
-    session.commit()
+
+
+def revoke_user_sessions(session: Session, user_id: str) -> None:
+    for record in session.scalars(
+        select(SessionToken).where(SessionToken.user_id == user_id, SessionToken.revoked_at.is_(None))
+    ).all():
+        record.revoked_at = utcnow()
+
+
+def _prune_login_attempts(entries: deque[float], now: float) -> None:
+    window_seconds = max(settings.login_rate_limit_window_seconds, 60)
+    while entries and (now - entries[0]) > window_seconds:
+        entries.popleft()
+
+
+def enforce_login_rate_limit(username: str, ip_address: str) -> None:
+    now = time.monotonic()
+    identity_key = f"{ip_address.lower()}:{username.strip().lower()}"
+    with _LOGIN_RATE_LIMIT_LOCK:
+        identity_attempts = _LOGIN_FAILURES_BY_IDENTITY[identity_key]
+        ip_attempts = _LOGIN_FAILURES_BY_IP[ip_address.lower()]
+        _prune_login_attempts(identity_attempts, now)
+        _prune_login_attempts(ip_attempts, now)
+        if len(identity_attempts) >= settings.login_rate_limit_attempts or len(ip_attempts) >= (
+            settings.login_rate_limit_attempts * 3
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many login attempts. Wait a few minutes before trying again.",
+            )
+
+
+def record_failed_login(username: str, ip_address: str) -> None:
+    now = time.monotonic()
+    identity_key = f"{ip_address.lower()}:{username.strip().lower()}"
+    with _LOGIN_RATE_LIMIT_LOCK:
+        identity_attempts = _LOGIN_FAILURES_BY_IDENTITY[identity_key]
+        ip_attempts = _LOGIN_FAILURES_BY_IP[ip_address.lower()]
+        _prune_login_attempts(identity_attempts, now)
+        _prune_login_attempts(ip_attempts, now)
+        identity_attempts.append(now)
+        ip_attempts.append(now)
+
+
+def clear_failed_logins(username: str, ip_address: str) -> None:
+    identity_key = f"{ip_address.lower()}:{username.strip().lower()}"
+    with _LOGIN_RATE_LIMIT_LOCK:
+        _LOGIN_FAILURES_BY_IDENTITY.pop(identity_key, None)
+        _LOGIN_FAILURES_BY_IP.pop(ip_address.lower(), None)
 
 
 def _build_actor(
@@ -259,9 +319,6 @@ def resolve_actor_from_credentials(
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()
         actor = _resolve_api_key(session, token)
-        if actor:
-            return actor
-        actor = _resolve_session(session, token)
         if actor:
             return actor
 

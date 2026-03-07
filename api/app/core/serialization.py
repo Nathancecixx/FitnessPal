@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import Date, DateTime, select
@@ -16,7 +16,6 @@ from app.core.models import (
     MealEntryItem,
     MealTemplate,
     MealTemplateItem,
-    PhotoAnalysisDraft,
     Recipe,
     RecipeItem,
     Routine,
@@ -36,7 +35,6 @@ EXPORT_MODELS = [
     RecipeItem,
     MealTemplate,
     MealTemplateItem,
-    PhotoAnalysisDraft,
     MealEntry,
     MealEntryItem,
     Exercise,
@@ -66,10 +64,16 @@ def export_payload(session: Session, user_id: str) -> dict[str, Any]:
     tables: dict[str, list[dict[str, Any]]] = {}
     for model in EXPORT_MODELS:
         rows = session.scalars(select(model).where(model.user_id == user_id)).all()
-        tables[model.__tablename__] = [serialize_instance(row) for row in rows]
+        serialized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            serialized = serialize_instance(row)
+            if model is MealEntry:
+                serialized["photo_draft_id"] = None
+            serialized_rows.append(serialized)
+        tables[model.__tablename__] = serialized_rows
     return {
         "version": "0.2.0",
-        "exported_at": datetime.utcnow().isoformat(),
+        "exported_at": datetime.now(timezone.utc).isoformat(),
         "owner": {"user_id": user_id},
         "tables": tables,
     }
@@ -87,14 +91,20 @@ def _coerce_value(column_type: Any, value: Any) -> Any:
 
 def restore_payload(session: Session, payload: dict[str, Any], user_id: str) -> dict[str, int]:
     tables = payload.get("tables", {})
+    if not isinstance(tables, dict):
+        raise ValueError("Restore payload must include a tables object.")
     counts: dict[str, int] = {}
     try:
         for model in EXPORT_MODELS:
             rows = tables.get(model.__tablename__, [])
+            if not isinstance(rows, list):
+                raise ValueError(f"Restore table {model.__tablename__} must be a list.")
             counts[model.__tablename__] = 0
             mapper = sa_inspect(model)
             primary_keys = [column.key for column in mapper.primary_key]
             for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError(f"Restore rows for {model.__tablename__} must be objects.")
                 values = {
                     column.key: _coerce_value(column.type, row.get(column.key))
                     for column in mapper.columns
@@ -102,6 +112,8 @@ def restore_payload(session: Session, payload: dict[str, Any], user_id: str) -> 
                 }
                 if "user_id" in {column.key for column in mapper.columns}:
                     values["user_id"] = user_id
+                if model is MealEntry:
+                    values["photo_draft_id"] = None
                 existing_id = next((row[key] for key in primary_keys if key in row), None)
                 existing = session.get(model, existing_id) if existing_id else None
                 if existing and getattr(existing, "user_id", user_id) == user_id:

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -21,18 +21,22 @@ from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import (
     Actor,
     authenticate_user,
+    clear_failed_logins,
     change_password,
     create_api_key as issue_api_key,
     create_password_setup_token,
     create_session_token,
     ensure_admin_user,
+    enforce_login_rate_limit,
     get_actor,
+    record_failed_login,
     redeem_password_setup_token,
+    revoke_user_sessions,
     require_scope,
 )
 from app.core.serialization import export_payload, restore_payload
 from app.core.storage import write_json_export
-from app.core.models import ApiKey, AppUser, ExportRecord, FoodItem, Goal, JobRecord, MealEntry, SessionToken, WeightEntry, WorkoutSession, utcnow
+from app.core.models import AiFeatureBinding, ApiKey, AppUser, ExportRecord, FoodItem, Goal, JobRecord, MealEntry, SessionToken, WeightEntry, WorkoutSession, utcnow
 
 
 settings = get_settings()
@@ -49,12 +53,12 @@ class LoginRequest(BaseModel):
 
 class PasswordSetupRequest(BaseModel):
     token: str
-    new_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=12)
 
 
 class PasswordChangeRequest(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=12)
 
 
 class GoalCreate(BaseModel):
@@ -91,14 +95,36 @@ def admin_write(actor: Actor = Depends(platform_write)) -> Actor:
     return actor
 
 
-def set_session_cookie(response: Response, token: str) -> None:
+def _client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip() or "unknown"
+    return request.client.host if request.client else "unknown"
+
+
+def _session_cookie_secure_flag(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip().lower()
+    hostname = (request.url.hostname or "").lower()
+    is_local_host = hostname in {"localhost", "127.0.0.1", "::1"}
+    secure_cookie = forwarded_proto == "https"
+    if not secure_cookie and not is_local_host:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HTTPS is required for session-based login on non-local hosts.",
+        )
+    return secure_cookie
+
+
+def set_session_cookie(response: Response, request: Request, token: str) -> None:
+    secure_cookie = _session_cookie_secure_flag(request)
     response.set_cookie(
         key="fitnesspal_session",
         value=token,
         httponly=True,
-        samesite="lax",
-        secure=False,
+        samesite="strict",
+        secure=secure_cookie,
         max_age=settings.session_days * 24 * 3600,
+        path="/",
     )
 
 
@@ -126,7 +152,7 @@ def serialize_user(row: AppUser) -> dict[str, Any]:
     }
 
 
-def build_auth_payload(user: AppUser, session_token: str) -> dict[str, Any]:
+def build_auth_payload(user: AppUser) -> dict[str, Any]:
     scopes = [
         "platform:read",
         "platform:write",
@@ -141,48 +167,63 @@ def build_auth_payload(user: AppUser, session_token: str) -> dict[str, Any]:
     return {
         "user": serialize_user(user),
         "scopes": scopes,
-        "session_token": session_token,
     }
 
 
 @router.get("/health")
 def healthcheck(session: Session = Depends(get_session)) -> dict[str, Any]:
-    ai_runtime = inspect_ai_runtime(session)
     return {
         "status": "ok",
         "service": settings.app_name,
-        "storage_root": str(settings.storage_root),
-        "ai_configured_features": ai_runtime["configured_feature_count"],
+        "ai_configured_features": session.scalar(
+            select(func.count(AiFeatureBinding.id)).where(AiFeatureBinding.profile_id.is_not(None))
+        ) or 0,
     }
 
 
 @router.post("/auth/login")
-def login(payload: LoginRequest, response: Response, session: Session = Depends(get_session)) -> dict[str, Any]:
+def login(
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
     ensure_admin_user(session)
+    client_ip = _client_ip(request)
+    enforce_login_rate_limit(payload.username, client_ip)
     user = authenticate_user(session, payload.username, payload.password)
     if not user:
+        record_failed_login(payload.username, client_ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
+    clear_failed_logins(payload.username, client_ip)
+    _session_cookie_secure_flag(request)
     token = create_session_token(session, user)
-    set_session_cookie(response, token)
-    return build_auth_payload(user, token)
+    set_session_cookie(response, request, token)
+    return build_auth_payload(user)
 
 
 @router.post("/auth/password/setup")
 def setup_password(
     payload: PasswordSetupRequest,
+    request: Request,
     response: Response,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     user = redeem_password_setup_token(session, payload.token, payload.new_password)
+    revoke_user_sessions(session, user.id)
+    session.commit()
+    _session_cookie_secure_flag(request)
     token = create_session_token(session, user)
-    set_session_cookie(response, token)
+    set_session_cookie(response, request, token)
     write_audit(session, audit_actor_for_user(user), "auth.password_setup_completed", "user", user.id, {})
-    return build_auth_payload(user, token)
+    return build_auth_payload(user)
 
 
 @router.post("/auth/password/change")
 def update_password(
     payload: PasswordChangeRequest,
+    request: Request,
+    response: Response,
     actor: Actor = Depends(platform_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
@@ -190,6 +231,11 @@ def update_password(
     if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found.")
     change_password(session, user, payload.current_password, payload.new_password)
+    revoke_user_sessions(session, user.id)
+    session.commit()
+    _session_cookie_secure_flag(request)
+    token = create_session_token(session, user)
+    set_session_cookie(response, request, token)
     write_audit(session, actor, "auth.password_changed", "user", user.id, {})
     return {"status": "ok"}
 
@@ -205,7 +251,7 @@ def logout(
         if record and record.user_id == actor.user_id:
             record.revoked_at = utcnow()
             session.commit()
-    response.delete_cookie("fitnesspal_session")
+    response.delete_cookie("fitnesspal_session", path="/")
     return {"status": "ok"}
 
 
@@ -301,11 +347,11 @@ def get_runtime(actor: Actor = Depends(platform_read), session: Session = Depend
     return {
         "app_name": settings.app_name,
         "api_prefix": settings.api_prefix,
-        "storage_root": str(settings.storage_root),
-        "uploads_root": str(settings.upload_root / actor.user_id),
-        "exports_root": str(settings.export_root / actor.user_id),
+        "storage_root": "storage",
+        "uploads_root": f"uploads/{actor.user_id}",
+        "exports_root": f"exports/{actor.user_id}",
         "allow_origins": list(settings.allow_origins),
-        "ai": inspect_ai_runtime(session),
+        "ai": inspect_ai_runtime(session, include_admin_details=actor.is_admin),
         "jobs": {
             "queued": session.scalar(
                 select(func.count(JobRecord.id)).where(JobRecord.user_id == actor.user_id, JobRecord.status == "queued")
@@ -456,10 +502,15 @@ def create_export(actor: Actor = Depends(platform_write), session: Session = Dep
 @router.get("/exports/{export_id}/download")
 def download_export(export_id: str, actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> FileResponse:
     record = ensure_owned(session, ExportRecord, export_id, actor.user_id, "Export not found.", include_deleted=True)
-    path = Path(record.path)
+    path = Path(record.path).resolve(strict=False)
+    expected_root = (settings.export_root / actor.user_id).resolve(strict=False)
+    try:
+        path.relative_to(expected_root)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail="Export file missing.") from error
     if not path.exists():
         raise HTTPException(status_code=404, detail="Export file missing.")
-    return FileResponse(path)
+    return FileResponse(path, filename=path.name)
 
 
 @router.post("/exports/restore")
@@ -503,7 +554,7 @@ def serialize_export(record: ExportRecord) -> dict[str, Any]:
         "id": record.id,
         "format": record.format,
         "status": record.status,
-        "path": record.path,
+        "path": Path(record.path).name,
         "summary": record.summary_json,
         "created_at": record.created_at.isoformat(),
         "finished_at": record.finished_at.isoformat() if record.finished_at else None,
@@ -515,9 +566,9 @@ def serialize_job(record: JobRecord) -> dict[str, Any]:
         "id": record.id,
         "job_type": record.job_type,
         "status": record.status,
-        "payload": record.payload_json,
-        "result": record.result_json,
-        "dedupe_key": record.dedupe_key,
+        "payload": {},
+        "result": None,
+        "dedupe_key": None,
         "attempts": record.attempts,
         "max_attempts": record.max_attempts,
         "available_at": record.available_at.isoformat(),

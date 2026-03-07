@@ -22,7 +22,7 @@ from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
 from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import Actor, require_scope
-from app.core.storage import save_upload
+from app.core.storage import ensure_managed_upload_path, save_upload
 
 
 router = APIRouter(route_class=IdempotentRoute, tags=["nutrition"])
@@ -157,7 +157,7 @@ def barcode_lookup(barcode: str, actor: Actor = Depends(nutrition_read)) -> dict
 @router.post("/foods/label-photo")
 def scan_food_label(
     file: UploadFile = File(...),
-    actor: Actor = Depends(nutrition_read),
+    actor: Actor = Depends(nutrition_write),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     target = save_upload(file, actor.user_id, subdir="label-photos")
@@ -814,7 +814,8 @@ def serialize_photo_draft(row: PhotoAnalysisDraft) -> dict[str, Any]:
     return {
         "id": row.id,
         "status": row.status,
-        "source_path": row.source_path,
+        "source_path": None,
+        "file_name": Path(row.source_path).name,
         "provider": row.provider,
         "model_name": row.model_name,
         "confidence": row.confidence,
@@ -853,7 +854,8 @@ def analyze_photo_job(session: Session, payload: dict[str, Any]) -> dict[str, An
         draft.status = "processing"
         draft.error_message = None
         session.commit()
-        result = analyze_meal_photo(session, Path(draft.source_path))
+        safe_path = ensure_managed_upload_path(Path(draft.source_path), user_id=user_id)
+        result = analyze_meal_photo(session, safe_path)
         draft.status = "ready"
         draft.provider = str(result.get("provider"))
         draft.model_name = str(result.get("model_name"))

@@ -102,7 +102,8 @@ export type MealTemplate = {
 export type MealPhotoDraft = {
   id: string
   status: string
-  source_path: string
+  source_path?: string | null
+  file_name?: string
   provider?: string | null
   model_name?: string | null
   confidence?: number | null
@@ -248,6 +249,8 @@ export type AiProfile = {
   is_enabled: boolean
   is_read_only: boolean
   default_headers_json: Record<string, string>
+  custom_header_keys: string[]
+  has_custom_headers: boolean
   advanced_settings_json: Record<string, unknown>
   models_json: string[]
   last_reachable: boolean
@@ -282,6 +285,14 @@ export type AiPersonaConfig = {
   updated_at: string
 }
 
+export type AiPersonaSummary = {
+  id: string
+  config_key: string
+  display_name: string
+  tagline: string
+  updated_at: string
+}
+
 export type ManagedUser = {
   id: string
   username: string
@@ -295,7 +306,6 @@ export type ManagedUser = {
 export type AuthResponse = {
   user: ManagedUser
   scopes: string[]
-  session_token?: string
 }
 
 export type SessionInfo = {
@@ -336,7 +346,7 @@ export type JobRecord = {
   id: string
   job_type: string
   status: string
-  payload: Record<string, unknown>
+  payload?: Record<string, unknown>
   result?: Record<string, unknown> | null
   dedupe_key?: string | null
   attempts: number
@@ -358,7 +368,7 @@ export type RuntimeInfo = {
   ai: {
     profiles: AiProfile[]
     features: AiFeatureBinding[]
-    persona: AiPersonaConfig
+    persona: AiPersonaSummary
     legacy_mode: boolean
     configured_feature_count: number
   }

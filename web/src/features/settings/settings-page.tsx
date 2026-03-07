@@ -169,7 +169,7 @@ export function SettingsPage() {
                   { label: 'App', value: runtimeQuery.data.app_name },
                   { label: 'Uploads root', value: runtimeQuery.data.uploads_root },
                   { label: 'Exports root', value: runtimeQuery.data.exports_root },
-                  { label: 'AI profiles', value: runtimeQuery.data.ai.profiles.length },
+                  { label: 'AI profiles', value: isAdmin ? runtimeQuery.data.ai.profiles.length : 'Restricted' },
                   { label: 'Configured features', value: runtimeQuery.data.ai.configured_feature_count },
                   { label: 'Legacy fallback', value: runtimeQuery.data.ai.legacy_mode ? 'Yes' : 'No' },
                   { label: 'Coach persona', value: runtimeQuery.data.ai.persona.display_name },
@@ -196,7 +196,7 @@ export function SettingsPage() {
                 ) : null}
                 {changePassword.isError ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{changePassword.error.message}</div> : null}
                 {changePassword.isSuccess ? <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-900">Password updated.</div> : null}
-                <ActionButton type="submit" disabled={changePassword.isPending || passwordDraft.next.length < 8 || passwordDraft.next !== passwordDraft.confirm}>
+                <ActionButton type="submit" disabled={changePassword.isPending || passwordDraft.next.length < 12 || passwordDraft.next !== passwordDraft.confirm}>
                   Update password
                 </ActionButton>
               </form>

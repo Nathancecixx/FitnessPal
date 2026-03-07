@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: fitnesspal
-      POSTGRES_USER: fitnesspal
-      POSTGRES_PASSWORD: fitnesspal
+      POSTGRES_DB: ${FITNESSPAL_POSTGRES_DB:-fitnesspal}
+      POSTGRES_USER: ${FITNESSPAL_POSTGRES_USER:-fitnesspal}
+      POSTGRES_PASSWORD: ${FITNESSPAL_POSTGRES_PASSWORD:?Set FITNESSPAL_POSTGRES_PASSWORD in .env}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fitnesspal -d fitnesspal"]
+      test: ["CMD-SHELL", "pg_isready -U ${FITNESSPAL_POSTGRES_USER:-fitnesspal} -d ${FITNESSPAL_POSTGRES_DB:-fitnesspal}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -19,12 +19,18 @@ services:
     build:
       context: ./api
     environment:
-      FITNESSPAL_DATABASE_URL: ${FITNESSPAL_DATABASE_URL:-postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal}
+      FITNESSPAL_DATABASE_URL: ${FITNESSPAL_DATABASE_URL:?Set FITNESSPAL_DATABASE_URL in .env}
       FITNESSPAL_STORAGE_ROOT: /srv/storage
       FITNESSPAL_ADMIN_USERNAME: ${FITNESSPAL_ADMIN_USERNAME:-owner}
-      FITNESSPAL_ADMIN_PASSWORD: ${FITNESSPAL_ADMIN_PASSWORD:-fitnesspal}
+      FITNESSPAL_ADMIN_PASSWORD: ${FITNESSPAL_ADMIN_PASSWORD:?Set FITNESSPAL_ADMIN_PASSWORD in .env}
       FITNESSPAL_PASSWORD_SETUP_HOURS: ${FITNESSPAL_PASSWORD_SETUP_HOURS:-72}
       FITNESSPAL_ALLOW_ORIGINS: ${FITNESSPAL_ALLOW_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
+      FITNESSPAL_CONFIG_SECRET: ${FITNESSPAL_CONFIG_SECRET:-}
+      FITNESSPAL_ALLOWED_AI_HOSTS: ${FITNESSPAL_ALLOWED_AI_HOSTS:-api.openai.com,api.anthropic.com,localhost,127.0.0.1,::1,host.docker.internal}
+      FITNESSPAL_MAX_UPLOAD_BYTES: ${FITNESSPAL_MAX_UPLOAD_BYTES:-8388608}
+      FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS: ${FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS:-10}
+      FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS:-900}
+      FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP: ${FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP:-true}
       FITNESSPAL_AGENT_MANIFEST_URL: ${FITNESSPAL_AGENT_MANIFEST_URL:-http://localhost:8080/.well-known/fitnesspal-agent.json}
       FITNESSPAL_LOCAL_AI_BASE_URL: ${FITNESSPAL_LOCAL_AI_BASE_URL:-http://host.docker.internal:11434/v1}
       FITNESSPAL_LOCAL_AI_MODEL: ${FITNESSPAL_LOCAL_AI_MODEL:-qwen3-vl:8b}
@@ -38,7 +44,7 @@ services:
     volumes:
       - ./storage:/srv/storage
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health').read()"]
       interval: 10s
@@ -50,12 +56,18 @@ services:
       context: ./api
     command: ["python", "-m", "app.worker"]
     environment:
-      FITNESSPAL_DATABASE_URL: ${FITNESSPAL_DATABASE_URL:-postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal}
+      FITNESSPAL_DATABASE_URL: ${FITNESSPAL_DATABASE_URL:?Set FITNESSPAL_DATABASE_URL in .env}
       FITNESSPAL_STORAGE_ROOT: /srv/storage
       FITNESSPAL_ADMIN_USERNAME: ${FITNESSPAL_ADMIN_USERNAME:-owner}
-      FITNESSPAL_ADMIN_PASSWORD: ${FITNESSPAL_ADMIN_PASSWORD:-fitnesspal}
+      FITNESSPAL_ADMIN_PASSWORD: ${FITNESSPAL_ADMIN_PASSWORD:?Set FITNESSPAL_ADMIN_PASSWORD in .env}
       FITNESSPAL_PASSWORD_SETUP_HOURS: ${FITNESSPAL_PASSWORD_SETUP_HOURS:-72}
       FITNESSPAL_ALLOW_ORIGINS: ${FITNESSPAL_ALLOW_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
+      FITNESSPAL_CONFIG_SECRET: ${FITNESSPAL_CONFIG_SECRET:-}
+      FITNESSPAL_ALLOWED_AI_HOSTS: ${FITNESSPAL_ALLOWED_AI_HOSTS:-api.openai.com,api.anthropic.com,localhost,127.0.0.1,::1,host.docker.internal}
+      FITNESSPAL_MAX_UPLOAD_BYTES: ${FITNESSPAL_MAX_UPLOAD_BYTES:-8388608}
+      FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS: ${FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS:-10}
+      FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS:-900}
+      FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP: ${FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP:-true}
       FITNESSPAL_AGENT_MANIFEST_URL: ${FITNESSPAL_AGENT_MANIFEST_URL:-http://localhost:8080/.well-known/fitnesspal-agent.json}
       FITNESSPAL_LOCAL_AI_BASE_URL: ${FITNESSPAL_LOCAL_AI_BASE_URL:-http://host.docker.internal:11434/v1}
       FITNESSPAL_LOCAL_AI_MODEL: ${FITNESSPAL_LOCAL_AI_MODEL:-qwen3-vl:8b}
@@ -76,7 +88,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
 volumes:
   postgres_data:

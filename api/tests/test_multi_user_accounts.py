@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from fastapi import Response
+from fastapi import Request, Response
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -55,8 +55,21 @@ class MultiUserAccountTests(unittest.TestCase):
             self.assertTrue(created["setup_token"].startswith("fpset_"))
 
             response = Response()
+            request = Request(
+                {
+                    "type": "http",
+                    "scheme": "http",
+                    "method": "POST",
+                    "path": "/api/v1/auth/password/setup",
+                    "headers": [],
+                    "server": ("localhost", 8000),
+                    "client": ("127.0.0.1", 12345),
+                    "query_string": b"",
+                }
+            )
             completed = setup_password(
                 PasswordSetupRequest(token=created["setup_token"], new_password="strong-pass-123"),
+                request,
                 response,
                 session,
             )

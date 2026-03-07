@@ -251,6 +251,8 @@ Used by the web app.
 - login endpoint: `POST /api/v1/auth/login`
 - cookie name: `fitnesspal_session`
 - logout endpoint: `POST /api/v1/auth/logout`
+- session cookies are only issued over HTTPS unless the request is to `localhost`, `127.0.0.1`, or `::1`
+- bearer session tokens are not supported; `Authorization: Bearer ...` is reserved for API keys only
 
 ### Bearer API key auth
 
@@ -278,14 +280,23 @@ Admins can create additional users through the API. New users receive one-time p
 ### Password and token handling
 
 - passwords are stored using `hashlib.scrypt`
+- password setup and password change require a minimum length of 12 characters
 - session tokens and API keys are stored as SHA-256 hashes
 - revoked tokens are retained for auditability
+- password setup and password change revoke older session cookies for that user
 
 ### Idempotency
 
 Routers use the custom `IdempotentRoute` class.
 
 Agent and automation clients should send `Idempotency-Key` on non-idempotent writes to make retries safer.
+
+Do not send `Idempotency-Key` to routes that return one-time credentials or tokens, such as:
+
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/password/setup`
+- `POST /api/v1/api-keys`
+- `POST /api/v1/users`
 
 ## Jobs and Background Work
 
@@ -321,12 +332,17 @@ Environment variables supported by the backend:
 | `FITNESSPAL_DATABASE_URL` | SQLAlchemy database URL | `postgresql+psycopg://fitnesspal:fitnesspal@postgres:5432/fitnesspal` |
 | `FITNESSPAL_SQL_ECHO` | SQL echo logging | `false` |
 | `FITNESSPAL_ADMIN_USERNAME` | bootstrap admin username | `owner` |
-| `FITNESSPAL_ADMIN_PASSWORD` | bootstrap admin password | `fitnesspal` |
+| `FITNESSPAL_ADMIN_PASSWORD` | bootstrap admin password | set explicitly to a unique 12+ character value |
 | `FITNESSPAL_PASSWORD_SETUP_HOURS` | one-time password setup token lifetime | `72` |
 | `FITNESSPAL_SESSION_DAYS` | session duration | `30` |
 | `FITNESSPAL_STORAGE_ROOT` | local storage root | `storage` |
 | `FITNESSPAL_ALLOW_ORIGINS` | CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173` plus deployment overrides |
-| `FITNESSPAL_CONFIG_SECRET` | encryption key for stored AI provider secrets | unset |
+| `FITNESSPAL_CONFIG_SECRET` | encryption key for stored AI provider secrets | set explicitly before saving cloud AI credentials |
+| `FITNESSPAL_ALLOWED_AI_HOSTS` | allow-list for outbound AI provider hosts | `api.openai.com,api.anthropic.com,localhost,127.0.0.1,::1,host.docker.internal` |
+| `FITNESSPAL_MAX_UPLOAD_BYTES` | server-side upload size limit | `8388608` |
+| `FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS` | failed login attempts allowed per window | `10` |
+| `FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | login rate-limit window in seconds | `900` |
+| `FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP` | reject insecure bootstrap secrets at startup | `true` |
 | `FITNESSPAL_LOCAL_AI_BASE_URL` | legacy read-only AI fallback endpoint | unset unless configured |
 | `FITNESSPAL_LOCAL_AI_MODEL` | legacy fallback model name | `qwen3-vl:8b` |
 | `FITNESSPAL_LOCAL_AI_TIMEOUT_SECONDS` | legacy fallback timeout | `60` in app defaults, `90` in Docker env examples |
@@ -339,6 +355,8 @@ Notes:
 - in Docker, storage is mounted to `/srv/storage`
 - in local development, storage defaults to a repo-local `storage/` directory unless overridden
 - no saved AI provider secret can be written until `FITNESSPAL_CONFIG_SECRET` is present
+- `FITNESSPAL_CONFIG_SECRET` must be at least 32 characters and not use a placeholder value
+- `FITNESSPAL_ALLOWED_AI_HOSTS` controls which AI hosts can be saved in admin-managed profiles
 
 ## Running the API
 

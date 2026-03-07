@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+﻿import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { ActionButton, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, Panel } from '../../components/ui'
@@ -12,6 +12,8 @@ type ProfileDraft = {
   description: string
   api_key: string
   clear_api_key: boolean
+  replace_default_headers: boolean
+  clear_default_headers: boolean
   default_model: string
   timeout_seconds: string
   is_enabled: boolean
@@ -55,10 +57,12 @@ function toProfileDraft(profile?: AiProfile | null): ProfileDraft {
     description: profile?.description ?? '',
     api_key: '',
     clear_api_key: false,
+    replace_default_headers: false,
+    clear_default_headers: false,
     default_model: profile?.default_model ?? '',
     timeout_seconds: String(profile?.timeout_seconds ?? 60),
     is_enabled: profile?.is_enabled ?? true,
-    default_headers_json: stringifyJson(profile?.default_headers_json ?? {}),
+    default_headers_json: profile?.has_custom_headers ? '' : stringifyJson(profile?.default_headers_json ?? {}),
     advanced_settings_json: stringifyJson(profile?.advanced_settings_json ?? {}),
   }
 }
@@ -144,11 +148,14 @@ export function AiAdminPanel() {
         description: profileDraft.description || null,
         api_key: profileDraft.api_key || null,
         clear_api_key: profileDraft.clear_api_key,
+        clear_default_headers: profileDraft.clear_default_headers,
         default_model: profileDraft.default_model || null,
         timeout_seconds: Number(profileDraft.timeout_seconds || 60),
         is_enabled: profileDraft.is_enabled,
-        default_headers_json: parseJsonValue(profileDraft.default_headers_json, {}),
         advanced_settings_json: parseJsonValue(profileDraft.advanced_settings_json, {}),
+      } as Record<string, unknown>
+      if (!selectedProfile || !selectedProfile.has_custom_headers || profileDraft.replace_default_headers) {
+        payload.default_headers_json = parseJsonValue(profileDraft.default_headers_json, {})
       }
       if (selectedProfile && !selectedProfile.is_read_only) {
         return api.updateAiProfile(selectedProfile.id, payload)
@@ -158,7 +165,14 @@ export function AiAdminPanel() {
     onSuccess: async (result) => {
       setStatus(`Saved AI profile ${result.name}.`)
       setSelectedProfileId(result.id)
-      setProfileDraft((current) => ({ ...current, api_key: '', clear_api_key: false }))
+      setProfileDraft((current) => ({
+        ...current,
+        api_key: '',
+        clear_api_key: false,
+        clear_default_headers: false,
+        replace_default_headers: false,
+        default_headers_json: result.has_custom_headers ? '' : current.default_headers_json,
+      }))
       await invalidateAiQueries()
     },
     onError: (error) => setStatus(error.message),
@@ -296,11 +310,48 @@ export function AiAdminPanel() {
               <input type="checkbox" checked={profileDraft.clear_api_key} onChange={(event) => setProfileDraft((current) => ({ ...current, clear_api_key: event.target.checked }))} />
               Clear stored API key
             </label>
+            {selectedProfile?.has_custom_headers ? (
+              <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+                Stored custom headers are hidden and stay unchanged unless you replace or clear them.
+                {selectedProfile.custom_header_keys.length ? ` Keys: ${selectedProfile.custom_header_keys.join(', ')}` : ''}
+              </div>
+            ) : null}
+            <label className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={profileDraft.replace_default_headers}
+                onChange={(event) => setProfileDraft((current) => ({
+                  ...current,
+                  replace_default_headers: event.target.checked,
+                  clear_default_headers: event.target.checked ? false : current.clear_default_headers,
+                }))}
+                disabled={profileDraft.clear_default_headers}
+              />
+              Replace stored custom headers
+            </label>
+            <label className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={profileDraft.clear_default_headers}
+                onChange={(event) => setProfileDraft((current) => ({
+                  ...current,
+                  clear_default_headers: event.target.checked,
+                  replace_default_headers: event.target.checked ? false : current.replace_default_headers,
+                }))}
+              />
+              Clear stored custom headers
+            </label>
             <label className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
               <input type="checkbox" checked={profileDraft.is_enabled} onChange={(event) => setProfileDraft((current) => ({ ...current, is_enabled: event.target.checked }))} />
               Profile enabled
             </label>
-            <LabelledTextArea label="Default headers JSON" value={profileDraft.default_headers_json} onChange={(value) => setProfileDraft((current) => ({ ...current, default_headers_json: value }))} rows={5} />
+            <LabelledTextArea
+              label="Default headers JSON"
+              value={profileDraft.default_headers_json}
+              onChange={(value) => setProfileDraft((current) => ({ ...current, default_headers_json: value }))}
+              rows={5}
+              placeholder={selectedProfile?.has_custom_headers && !profileDraft.replace_default_headers ? 'Enable "Replace stored custom headers" to overwrite the existing hidden values.' : '{\n  "X-Proxy-Key": "value"\n}'}
+            />
             <LabelledTextArea label="Advanced settings JSON" value={profileDraft.advanced_settings_json} onChange={(value) => setProfileDraft((current) => ({ ...current, advanced_settings_json: value }))} rows={7} />
             <div className="flex flex-wrap gap-2">
               <ActionButton type="submit" disabled={saveProfile.isPending || (selectedProfile?.is_read_only ?? false)}>{selectedProfile && !selectedProfile.is_read_only ? 'Save profile' : 'Create profile'}</ActionButton>
@@ -369,3 +420,4 @@ export function AiAdminPanel() {
     </div>
   )
 }
+

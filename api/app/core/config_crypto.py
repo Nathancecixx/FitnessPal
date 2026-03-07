@@ -15,6 +15,7 @@ _ITERATIONS = 120_000
 _SALT_BYTES = 16
 _NONCE_BYTES = 16
 _MAC_BYTES = 32
+_MIN_SECRET_LENGTH = 32
 
 
 def _require_secret() -> str:
@@ -23,6 +24,17 @@ def _require_secret() -> str:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="FITNESSPAL_CONFIG_SECRET must be set before saving encrypted AI provider secrets.",
+        )
+    normalized_secret = secret.strip().lower()
+    if normalized_secret in {"change-me-before-saving-cloud-ai-keys", "change-me", "changeme"}:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="FITNESSPAL_CONFIG_SECRET must be replaced with a unique random value before saving encrypted secrets.",
+        )
+    if len(secret) < _MIN_SECRET_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"FITNESSPAL_CONFIG_SECRET must be at least {_MIN_SECRET_LENGTH} characters long.",
         )
     return secret
 
