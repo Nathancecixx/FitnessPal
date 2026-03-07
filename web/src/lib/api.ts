@@ -435,6 +435,87 @@ export type AssistantBrief = {
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
+const IMAGE_RESIZE_THRESHOLD_BYTES = 4 * 1024 * 1024
+const IMAGE_UPLOAD_MAX_EDGE = 2048
+const IMAGE_UPLOAD_QUALITY = 0.82
+
+async function readErrorMessage(response: Response): Promise<string> {
+  const errorBody = await response.text()
+
+  if (response.status === 413) {
+    return 'Upload too large. Please try a smaller image or photo.'
+  }
+
+  try {
+    const parsed = JSON.parse(errorBody) as { detail?: string }
+    if (parsed.detail) {
+      return parsed.detail
+    }
+  } catch {
+    // Fall through to plain-text handling.
+  }
+
+  const plainText = errorBody.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  return plainText || `Request failed with ${response.status}`
+}
+
+async function loadImageElement(file: File): Promise<HTMLImageElement> {
+  const objectUrl = URL.createObjectURL(file)
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl)
+      resolve(image)
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      reject(new Error('Image decode failed'))
+    }
+    image.src = objectUrl
+  })
+}
+
+async function prepareImageUpload(file: File): Promise<File> {
+  if (
+    typeof document === 'undefined'
+    || !file.type.startsWith('image/')
+    || file.type === 'image/gif'
+    || file.type === 'image/svg+xml'
+    || file.size <= IMAGE_RESIZE_THRESHOLD_BYTES
+  ) {
+    return file
+  }
+
+  try {
+    const image = await loadImageElement(file)
+    const longestEdge = Math.max(image.naturalWidth, image.naturalHeight)
+    const scale = longestEdge > IMAGE_UPLOAD_MAX_EDGE ? IMAGE_UPLOAD_MAX_EDGE / longestEdge : 1
+    const width = Math.max(1, Math.round(image.naturalWidth * scale))
+    const height = Math.max(1, Math.round(image.naturalHeight * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d')
+    if (!context) {
+      return file
+    }
+
+    context.drawImage(image, 0, 0, width, height)
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/jpeg', IMAGE_UPLOAD_QUALITY)
+    })
+    if (!blob || blob.size >= file.size) {
+      return file
+    }
+
+    const baseName = file.name.replace(/\.[^.]+$/, '') || 'upload'
+    return new File([blob], `${baseName}.jpg`, { type: 'image/jpeg', lastModified: file.lastModified })
+  } catch {
+    return file
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? {})
@@ -449,13 +530,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    const errorBody = await response.text()
-    try {
-      const parsed = JSON.parse(errorBody) as { detail?: string }
-      throw new Error(parsed.detail || `Request failed with ${response.status}`)
-    } catch {
-      throw new Error(errorBody || `Request failed with ${response.status}`)
-    }
+    throw new Error(await readErrorMessage(response))
   }
 
   return response.json() as Promise<T>
@@ -469,7 +544,7 @@ async function upload<T>(path: string, formData: FormData): Promise<T> {
   })
 
   if (!response.ok) {
-    throw new Error(await response.text())
+    throw new Error(await readErrorMessage(response))
   }
 
   return response.json() as Promise<T>
@@ -507,9 +582,9 @@ export const api = {
   listFoods: (search?: string) => request<{ items: FoodItem[]; total: number }>(`/foods${search ? `?search=${encodeURIComponent(search)}` : ''}`),
   createFood: (payload: Partial<FoodItem> & { name: string }) => request<FoodItem>('/foods', { method: 'POST', body: JSON.stringify(payload) }),
   lookupBarcode: (barcode: string) => request<FoodImportDraft>(`/foods/barcode-lookup/${encodeURIComponent(barcode)}`),
-  scanFoodLabel: (file: File) => {
+  scanFoodLabel: async (file: File) => {
     const formData = new FormData()
-    formData.append('file', file)
+    formData.append('file', await prepareImageUpload(file))
     return upload<FoodImportDraft>('/foods/label-photo', formData)
   },
   listRecipes: () => request<{ items: Recipe[]; total: number }>('/recipes'),
@@ -523,9 +598,9 @@ export const api = {
   updateMealTemplate: (templateId: string, payload: Record<string, unknown>) => request<MealTemplate>(`/meal-templates/${templateId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteMealTemplate: (templateId: string) => request<{ status: string; id: string }>(`/meal-templates/${templateId}`, { method: 'DELETE' }),
   listMealPhotos: () => request<{ items: MealPhotoDraft[]; total: number }>('/meal-photos'),
-  uploadMealPhoto: (file: File) => {
+  uploadMealPhoto: async (file: File) => {
     const formData = new FormData()
-    formData.append('file', file)
+    formData.append('file', await prepareImageUpload(file))
     return upload<MealPhotoDraft>('/meal-photos', formData)
   },
   rerunMealPhotoAnalysis: (draftId: string) => request<MealPhotoDraft>(`/meal-photos/${draftId}/analyze`, { method: 'POST' }),
