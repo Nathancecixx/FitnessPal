@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import os
 import unittest
 
 from fastapi import Request, Response
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.core.models  # noqa: F401
+from app.core.config import get_settings
 from app.core.database import Base
 from app.core.models import AppUser
 from app.core.security import Actor
 from app.modules.nutrition import FoodCreate, create_food, list_foods
-from app.modules.platform import PasswordSetupRequest, UserCreate, create_user, setup_password
+from app.modules.platform import PasswordSetupRequest, UserCreate, _session_cookie_secure_flag, create_user, setup_password
 
 
 class MultiUserAccountTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.original_allow_insecure_http_private_hosts = os.environ.get("FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS")
+        get_settings.cache_clear()
         self.engine = create_engine(
             "sqlite://",
             future=True,
@@ -48,6 +53,11 @@ class MultiUserAccountTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.engine.dispose()
+        if self.original_allow_insecure_http_private_hosts is None:
+            os.environ.pop("FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS", None)
+        else:
+            os.environ["FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS"] = self.original_allow_insecure_http_private_hosts
+        get_settings.cache_clear()
 
     def test_admin_can_issue_password_setup_and_user_can_complete_it(self) -> None:
         with self.SessionLocal() as session:
@@ -102,6 +112,45 @@ class MultiUserAccountTests(unittest.TestCase):
 
         self.assertEqual([item["name"] for item in admin_foods], ["Admin oats"])
         self.assertEqual([item["name"] for item in user_foods], ["User yogurt"])
+
+    def test_private_lan_http_hosts_can_receive_session_cookies_when_enabled(self) -> None:
+        os.environ["FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS"] = "true"
+        get_settings.cache_clear()
+        request = Request(
+            {
+                "type": "http",
+                "scheme": "http",
+                "method": "POST",
+                "path": "/api/v1/auth/login",
+                "headers": [(b"host", b"192.168.1.25:8080")],
+                "server": ("192.168.1.25", 8080),
+                "client": ("192.168.1.50", 12345),
+                "query_string": b"",
+            }
+        )
+
+        self.assertFalse(_session_cookie_secure_flag(request))
+
+    def test_public_http_hosts_still_require_https_for_session_cookies(self) -> None:
+        os.environ["FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS"] = "true"
+        get_settings.cache_clear()
+        request = Request(
+            {
+                "type": "http",
+                "scheme": "http",
+                "method": "POST",
+                "path": "/api/v1/auth/login",
+                "headers": [(b"host", b"example.com")],
+                "server": ("example.com", 80),
+                "client": ("203.0.113.5", 12345),
+                "query_string": b"",
+            }
+        )
+
+        with self.assertRaises(HTTPException) as error:
+            _session_cookie_secure_flag(request)
+
+        self.assertEqual(error.exception.status_code, 400)
 
 
 if __name__ == "__main__":

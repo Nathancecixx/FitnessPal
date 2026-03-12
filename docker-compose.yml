@@ -30,6 +30,7 @@ services:
       FITNESSPAL_MAX_UPLOAD_BYTES: ${FITNESSPAL_MAX_UPLOAD_BYTES:-8388608}
       FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS: ${FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS:-10}
       FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS:-900}
+      FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS: ${FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS:-true}
       FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP: ${FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP:-true}
       FITNESSPAL_AGENT_MANIFEST_URL: ${FITNESSPAL_AGENT_MANIFEST_URL:-http://localhost:8080/.well-known/fitnesspal-agent.json}
       FITNESSPAL_LOCAL_AI_BASE_URL: ${FITNESSPAL_LOCAL_AI_BASE_URL:-http://host.docker.internal:11434/v1}
@@ -44,7 +45,7 @@ services:
     volumes:
       - ./storage:/srv/storage
     ports:
-      - "127.0.0.1:8000:8000"
+      - "8000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health').read()"]
       interval: 10s
@@ -88,7 +89,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
 
 volumes:
   postgres_data:

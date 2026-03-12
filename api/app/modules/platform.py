@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -104,15 +105,32 @@ def _client_ip(request: Request) -> str:
 
 def _session_cookie_secure_flag(request: Request) -> bool:
     forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip().lower()
-    hostname = (request.url.hostname or "").lower()
-    is_local_host = hostname in {"localhost", "127.0.0.1", "::1"}
+    hostname = (request.url.hostname or "").strip("[]").lower()
+    runtime_settings = get_settings()
     secure_cookie = forwarded_proto == "https"
-    if not secure_cookie and not is_local_host:
+    if not secure_cookie and not _allows_private_http_host(hostname, runtime_settings.allow_insecure_http_private_hosts):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="HTTPS is required for session-based login on non-local hosts.",
+            detail=(
+                "HTTPS is required for session-based login on public hosts. Use HTTPS, or enable "
+                "FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS for trusted private LAN access."
+            ),
         )
     return secure_cookie
+
+
+def _allows_private_http_host(hostname: str, allow_private_hosts: bool) -> bool:
+    if hostname in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    if not allow_private_hosts:
+        return False
+
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return "." not in hostname or hostname.endswith((".local", ".lan", ".home", ".home.arpa", ".internal"))
+
+    return address.is_private or address.is_loopback or address.is_link_local
 
 
 def set_session_cookie(response: Response, request: Request, token: str) -> None:

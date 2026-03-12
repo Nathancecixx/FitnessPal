@@ -251,7 +251,7 @@ Used by the web app.
 - login endpoint: `POST /api/v1/auth/login`
 - cookie name: `fitnesspal_session`
 - logout endpoint: `POST /api/v1/auth/logout`
-- session cookies are only issued over HTTPS unless the request is to `localhost`, `127.0.0.1`, or `::1`
+- session cookies are issued over HTTPS by default, or over plain HTTP for localhost and private LAN hosts when `FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS=true`
 - bearer session tokens are not supported; `Authorization: Bearer ...` is reserved for API keys only
 
 ### Bearer API key auth
@@ -342,6 +342,7 @@ Environment variables supported by the backend:
 | `FITNESSPAL_MAX_UPLOAD_BYTES` | server-side upload size limit | `8388608` |
 | `FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS` | failed login attempts allowed per window | `10` |
 | `FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | login rate-limit window in seconds | `900` |
+| `FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS` | allow session-cookie auth over plain HTTP for trusted private LAN hosts | `false` |
 | `FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP` | reject insecure bootstrap secrets at startup | `true` |
 | `FITNESSPAL_LOCAL_AI_BASE_URL` | legacy read-only AI fallback endpoint | unset unless configured |
 | `FITNESSPAL_LOCAL_AI_MODEL` | legacy fallback model name | `qwen3-vl:8b` |

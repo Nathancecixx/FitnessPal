@@ -38,6 +38,7 @@ class Settings:
     barcode_lookup_timeout_seconds: int
     barcode_lookup_user_agent: str
     allow_origins: tuple[str, ...]
+    allow_insecure_http_private_hosts: bool
     allowed_ai_hosts: tuple[str, ...]
     max_upload_bytes: int
     login_rate_limit_attempts: int
@@ -79,6 +80,9 @@ def get_settings() -> Settings:
         barcode_lookup_timeout_seconds=int(os.getenv("FITNESSPAL_BARCODE_LOOKUP_TIMEOUT_SECONDS", "10")),
         barcode_lookup_user_agent=os.getenv("FITNESSPAL_BARCODE_LOOKUP_USER_AGENT", "FitnessPal/0.1.0"),
         allow_origins=_split_csv(os.getenv("FITNESSPAL_ALLOW_ORIGINS"), _DEFAULT_ALLOW_ORIGINS),
+        allow_insecure_http_private_hosts=(
+            os.getenv("FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS", "false").lower() == "true"
+        ),
         allowed_ai_hosts=_split_csv(os.getenv("FITNESSPAL_ALLOWED_AI_HOSTS"), _DEFAULT_ALLOWED_AI_HOSTS),
         max_upload_bytes=int(os.getenv("FITNESSPAL_MAX_UPLOAD_BYTES", str(8 * 1024 * 1024))),
         login_rate_limit_attempts=int(os.getenv("FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS", "10")),

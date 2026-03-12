@@ -199,7 +199,9 @@ docker compose up --build -d
 - Health: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
 - OpenAPI: [http://localhost:8000/api/v1/openapi.json](http://localhost:8000/api/v1/openapi.json)
 
-Docker publishes these ports to `127.0.0.1` only. If you expose FitnessPal beyond localhost, put it behind HTTPS first.
+Docker publishes the web UI and API on all host interfaces by default. PostgreSQL stays bound to `127.0.0.1`.
+For trusted private LAN access over plain HTTP, the Docker setup enables `FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS=true`.
+Use HTTPS before exposing FitnessPal beyond a private network.
 
 ### 4. Sign in
 
@@ -350,6 +352,7 @@ The root `.env.example` is the easiest starting point for Docker-based developme
 | `FITNESSPAL_MAX_UPLOAD_BYTES` | server-side upload size limit | `8388608` |
 | `FITNESSPAL_LOGIN_RATE_LIMIT_ATTEMPTS` | failed login attempts allowed per window | `10` |
 | `FITNESSPAL_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | login rate-limit window in seconds | `900` |
+| `FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS` | allow session-cookie auth over plain HTTP for localhost and trusted private LAN hosts | `false` in app defaults, `true` in Docker LAN defaults |
 | `FITNESSPAL_ENFORCE_SECURE_BOOTSTRAP` | reject insecure bootstrap secrets at startup | `true` |
 | `FITNESSPAL_LOCAL_AI_BASE_URL` | legacy read-only AI fallback base URL | `http://host.docker.internal:11434/v1` |
 | `FITNESSPAL_LOCAL_AI_MODEL` | legacy fallback model name | `qwen3-vl:8b` |
