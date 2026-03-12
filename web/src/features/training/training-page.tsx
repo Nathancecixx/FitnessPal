@@ -1,9 +1,11 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { ActionButton, EmptyState, LabelledInput, LabelledSelect, PageIntro, Panel } from '../../components/ui'
 import { api, type Routine, type WorkoutSession, type WorkoutTemplate } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
+import { useWeightUnit } from '../../lib/user-preferences'
+import { convertMassToKg, formatMass, formatMassInput, getWeightUnitLabel, type WeightUnit } from '../../lib/weight-units'
 
 type SessionBlockDraft = {
   exercise_id: string
@@ -35,6 +37,10 @@ type RoutineDraft = {
   schedule_notes: string
   notes: string
   items: RoutineExerciseDraft[]
+}
+
+function defaultLoadIncrementForUnit(weightUnit: WeightUnit) {
+  return weightUnit === 'lbs' ? '5' : '2.5'
 }
 
 function createSessionBlockDraft(exerciseId = ''): SessionBlockDraft {
@@ -80,7 +86,7 @@ function buildBlocksFromTemplate(template: WorkoutTemplate): SessionBlockDraft[]
   }))
 }
 
-function buildBlocksFromSession(session: WorkoutSession): SessionBlockDraft[] {
+function buildBlocksFromSession(session: WorkoutSession, weightUnit: WeightUnit): SessionBlockDraft[] {
   const grouped = new Map<string, SessionBlockDraft>()
   const order: string[] = []
 
@@ -90,7 +96,7 @@ function buildBlocksFromSession(session: WorkoutSession): SessionBlockDraft[] {
         exercise_id: entry.exercise_id,
         target_sets: '0',
         reps: String(entry.reps),
-        load_kg: String(entry.load_kg),
+        load_kg: formatMassInput(entry.load_kg, weightUnit),
         rir: String(entry.rir ?? 2),
       })
       order.push(entry.exercise_id)
@@ -100,14 +106,14 @@ function buildBlocksFromSession(session: WorkoutSession): SessionBlockDraft[] {
     if (!current) continue
     current.target_sets = String(Number(current.target_sets) + 1)
     current.reps = String(entry.reps)
-    current.load_kg = String(entry.load_kg)
+    current.load_kg = formatMassInput(entry.load_kg, weightUnit)
     current.rir = String(entry.rir ?? 2)
   }
 
   return order.map((exerciseId) => grouped.get(exerciseId) ?? createSessionBlockDraft(exerciseId))
 }
 
-function expandBlocksToSets(blocks: SessionBlockDraft[]) {
+function expandBlocksToSets(blocks: SessionBlockDraft[], weightUnit: WeightUnit) {
   let setIndex = 1
 
   return blocks.flatMap((block) => {
@@ -120,7 +126,7 @@ function expandBlocksToSets(blocks: SessionBlockDraft[]) {
       exercise_id: block.exercise_id,
       set_index: setIndex++,
       reps: Number(block.reps) || 0,
-      load_kg: Number(block.load_kg) || 0,
+      load_kg: convertMassToKg(Number(block.load_kg) || 0, weightUnit),
       rir: block.rir ? Number(block.rir) : null,
     }))
   })
@@ -141,6 +147,8 @@ function summarizeSession(session: WorkoutSession, exerciseNameById: Record<stri
 }
 
 export function TrainingPage() {
+  const weightUnit = useWeightUnit()
+  const weightUnitLabel = getWeightUnitLabel(weightUnit)
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
   const sessionsQuery = useQuery({ queryKey: ['workout-sessions'], queryFn: () => api.listWorkoutSessions({ limit: 12 }) })
   const routinesQuery = useQuery({ queryKey: ['routines'], queryFn: api.listRoutines })
@@ -150,7 +158,7 @@ export function TrainingPage() {
     name: '',
     rep_target_min: '6',
     rep_target_max: '10',
-    load_increment: '2.5',
+    load_increment: defaultLoadIncrementForUnit('kg'),
   })
   const [sessionDraft, setSessionDraft] = useState({
     routine_id: '',
@@ -167,6 +175,16 @@ export function TrainingPage() {
     items: [createRoutineExerciseDraft()],
   })
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setExerciseDraft((current) => (
+      !current.name
+      && current.rep_target_min === '6'
+      && current.rep_target_max === '10'
+        ? { ...current, load_increment: defaultLoadIncrementForUnit(weightUnit) }
+        : current
+    ))
+  }, [weightUnit])
 
   const exercises = exercisesQuery.data?.items ?? []
   const sessions = sessionsQuery.data?.items ?? []
@@ -212,10 +230,10 @@ export function TrainingPage() {
       name: exerciseDraft.name,
       rep_target_min: Number(exerciseDraft.rep_target_min),
       rep_target_max: Number(exerciseDraft.rep_target_max),
-      load_increment: Number(exerciseDraft.load_increment),
+      load_increment: convertMassToKg(Number(exerciseDraft.load_increment), weightUnit),
     }),
     onSuccess: async () => {
-      setExerciseDraft({ name: '', rep_target_min: '6', rep_target_max: '10', load_increment: '2.5' })
+      setExerciseDraft({ name: '', rep_target_min: '6', rep_target_max: '10', load_increment: defaultLoadIncrementForUnit(weightUnit) })
       await queryClient.invalidateQueries({ queryKey: ['exercises'] })
     },
   })
@@ -265,14 +283,14 @@ export function TrainingPage() {
       routine_id: sessionDraft.routine_id || undefined,
       notes: sessionDraft.notes || undefined,
       perceived_energy: sessionDraft.perceived_energy ? Number(sessionDraft.perceived_energy) : undefined,
-      bodyweight_kg: sessionDraft.bodyweight_kg ? Number(sessionDraft.bodyweight_kg) : undefined,
-      sets: expandBlocksToSets(sessionDraft.blocks),
+      bodyweight_kg: sessionDraft.bodyweight_kg ? convertMassToKg(Number(sessionDraft.bodyweight_kg), weightUnit) : undefined,
+      sets: expandBlocksToSets(sessionDraft.blocks, weightUnit),
     }) : api.createWorkoutSession({
       routine_id: sessionDraft.routine_id || undefined,
       notes: sessionDraft.notes || undefined,
       perceived_energy: sessionDraft.perceived_energy ? Number(sessionDraft.perceived_energy) : undefined,
-      bodyweight_kg: sessionDraft.bodyweight_kg ? Number(sessionDraft.bodyweight_kg) : undefined,
-      sets: expandBlocksToSets(sessionDraft.blocks),
+      bodyweight_kg: sessionDraft.bodyweight_kg ? convertMassToKg(Number(sessionDraft.bodyweight_kg), weightUnit) : undefined,
+      sets: expandBlocksToSets(sessionDraft.blocks, weightUnit),
     })),
     onSuccess: async () => {
       setSessionDraft({
@@ -359,14 +377,14 @@ export function TrainingPage() {
   }
 
   function repeatSession(session: WorkoutSession) {
-    const blocks = buildBlocksFromSession(session)
+    const blocks = buildBlocksFromSession(session, weightUnit)
     setEditingSessionId(null)
     setSessionDraft((current) => ({
       ...current,
       routine_id: session.routine_id ?? '',
       notes: session.notes ?? 'Repeat session',
       perceived_energy: session.perceived_energy != null ? String(session.perceived_energy) : current.perceived_energy,
-      bodyweight_kg: session.bodyweight_kg != null ? String(session.bodyweight_kg) : current.bodyweight_kg,
+      bodyweight_kg: session.bodyweight_kg != null ? formatMassInput(session.bodyweight_kg, weightUnit) : current.bodyweight_kg,
       blocks: blocks.length ? blocks : [createSessionBlockDraft()],
     }))
 
@@ -507,12 +525,12 @@ export function TrainingPage() {
                           <div className="grid grid-cols-2 gap-3">
                             <LabelledInput label="Sets" type="number" value={block.target_sets} onChange={(value) => updateBlock(index, 'target_sets', value)} />
                             <LabelledInput label="Reps" type="number" value={block.reps} onChange={(value) => updateBlock(index, 'reps', value)} />
-                            <LabelledInput label="Load kg" type="number" value={block.load_kg} onChange={(value) => updateBlock(index, 'load_kg', value)} />
+                            <LabelledInput label={`Load ${weightUnitLabel}`} type="number" value={block.load_kg} onChange={(value) => updateBlock(index, 'load_kg', value)} />
                             <LabelledInput label="RIR" type="number" value={block.rir} onChange={(value) => updateBlock(index, 'rir', value)} />
                           </div>
                           {exercise ? (
                             <div className="rounded-2xl bg-white px-4 py-3 text-sm text-slate-600">
-                              Target {exercise.rep_target_min}-{exercise.rep_target_max} reps, then jump {exercise.load_increment} kg when the lift is ready.
+                              Target {exercise.rep_target_min}-{exercise.rep_target_max} reps, then jump {formatMass(exercise.load_increment, weightUnit)} when the lift is ready.
                             </div>
                           ) : null}
                         </div>
@@ -551,7 +569,7 @@ export function TrainingPage() {
                         onChange={(value) => setSessionDraft((current) => ({ ...current, perceived_energy: value }))}
                       />
                       <LabelledInput
-                        label="Bodyweight kg"
+                        label={`Bodyweight ${weightUnitLabel}`}
                         type="number"
                         step="0.1"
                         value={sessionDraft.bodyweight_kg}
@@ -575,7 +593,7 @@ export function TrainingPage() {
                       {session.routine_id ? <div className="mt-2 text-sm text-slate-300">{routineNameById[session.routine_id] ?? 'Routine session'}</div> : null}
                     </div>
                     <div className="rounded-full bg-white/10 px-3 py-2 text-sm">
-                      {'sync_status' in session && session.sync_status === 'queued' ? 'Queued sync' : `${Math.round(session.total_volume_kg)} kg`}
+                      {'sync_status' in session && session.sync_status === 'queued' ? 'Queued sync' : formatMass(session.total_volume_kg, weightUnit, { decimals: 0 })}
                     </div>
                   </div>
                   <div className="mt-3 text-sm text-slate-300">
@@ -587,12 +605,12 @@ export function TrainingPage() {
                       tone="secondary"
                       onClick={() => {
                         setEditingSessionId(session.id)
-                        const blocks = buildBlocksFromSession(session)
+                        const blocks = buildBlocksFromSession(session, weightUnit)
                         setSessionDraft({
                           routine_id: session.routine_id ?? '',
                           notes: session.notes ?? '',
                           perceived_energy: session.perceived_energy != null ? String(session.perceived_energy) : '',
-                          bodyweight_kg: session.bodyweight_kg != null ? String(session.bodyweight_kg) : '',
+                          bodyweight_kg: session.bodyweight_kg != null ? formatMassInput(session.bodyweight_kg, weightUnit) : '',
                           blocks: blocks.length ? blocks : [createSessionBlockDraft()],
                         })
                         if (blocks[0]?.exercise_id) {
@@ -634,7 +652,7 @@ export function TrainingPage() {
                 <div className="rounded-[24px] bg-lime p-5 text-slate-950">
                   <div className="text-xs uppercase tracking-[0.25em] text-slate-700">Next action</div>
                   <div className="mt-2 font-display text-3xl">{progressionRecommendation.recommendation}</div>
-                  <div className="mt-3 text-sm">Target next load: {progressionRecommendation.next_load_kg} kg</div>
+                  <div className="mt-3 text-sm">Target next load: {formatMass(progressionRecommendation.next_load_kg, weightUnit)}</div>
                   <p className="mt-3 text-sm leading-6">{progressionRecommendation.reason}</p>
                 </div>
 
@@ -783,7 +801,7 @@ export function TrainingPage() {
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                   <LabelledInput label="Rep min" type="number" value={exerciseDraft.rep_target_min} onChange={(value) => setExerciseDraft((current) => ({ ...current, rep_target_min: value }))} />
                   <LabelledInput label="Rep max" type="number" value={exerciseDraft.rep_target_max} onChange={(value) => setExerciseDraft((current) => ({ ...current, rep_target_max: value }))} />
-                  <LabelledInput label="Load jump" type="number" step="0.5" value={exerciseDraft.load_increment} onChange={(value) => setExerciseDraft((current) => ({ ...current, load_increment: value }))} />
+                  <LabelledInput label={`Load jump (${weightUnitLabel})`} type="number" step="0.5" value={exerciseDraft.load_increment} onChange={(value) => setExerciseDraft((current) => ({ ...current, load_increment: value }))} />
                 </div>
                 <ActionButton type="submit" className="sm:w-auto">Save exercise</ActionButton>
               </form>
@@ -797,7 +815,7 @@ export function TrainingPage() {
                     onClick={() => setSelectedExerciseId(exercise.id)}
                   >
                     <div className="font-semibold text-slate-950">{exercise.name}</div>
-                    <div className="mt-1 text-slate-500">{exercise.rep_target_min}-{exercise.rep_target_max} reps, +{exercise.load_increment} kg</div>
+                    <div className="mt-1 text-slate-500">{exercise.rep_target_min}-{exercise.rep_target_max} reps, +{formatMass(exercise.load_increment, weightUnit)}</div>
                   </button>
                 ))}
               </div>

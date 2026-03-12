@@ -15,7 +15,16 @@ from app.core.database import Base
 from app.core.models import AppUser
 from app.core.security import Actor
 from app.modules.nutrition import FoodCreate, create_food, list_foods
-from app.modules.platform import PasswordSetupRequest, UserCreate, _session_cookie_secure_flag, create_user, setup_password
+from app.modules.platform import (
+    PasswordSetupRequest,
+    UserCreate,
+    UserPreferencesUpdate,
+    _session_cookie_secure_flag,
+    create_user,
+    get_user_preferences,
+    setup_password,
+    update_user_preferences,
+)
 
 
 class MultiUserAccountTests(unittest.TestCase):
@@ -112,6 +121,35 @@ class MultiUserAccountTests(unittest.TestCase):
 
         self.assertEqual([item["name"] for item in admin_foods], ["Admin oats"])
         self.assertEqual([item["name"] for item in user_foods], ["User yogurt"])
+
+    def test_preferences_default_to_metric_until_updated(self) -> None:
+        with self.SessionLocal() as session:
+            preferences = get_user_preferences(self.admin_actor, session)
+
+        self.assertEqual(preferences["weight_unit"], "kg")
+        self.assertIsNone(preferences["created_at"])
+
+    def test_preferences_are_stored_per_user(self) -> None:
+        user_actor = Actor(
+            actor_type="session",
+            actor_id="user-session",
+            display_name="alice",
+            scopes=("*",),
+            user_id="user-alice",
+            username="alice",
+            is_admin=False,
+        )
+        with self.SessionLocal() as session:
+            session.add(AppUser(id=user_actor.user_id, username=user_actor.username, password_hash="hashed", is_active=True))
+            session.commit()
+
+            update_user_preferences(UserPreferencesUpdate(weight_unit="lbs"), self.admin_actor, session)
+
+            admin_preferences = get_user_preferences(self.admin_actor, session)
+            user_preferences = get_user_preferences(user_actor, session)
+
+        self.assertEqual(admin_preferences["weight_unit"], "lbs")
+        self.assertEqual(user_preferences["weight_unit"], "kg")
 
     def test_private_lan_http_hosts_can_receive_session_cookies_when_enabled(self) -> None:
         os.environ["FITNESSPAL_ALLOW_INSECURE_HTTP_PRIVATE_HOSTS"] = "true"

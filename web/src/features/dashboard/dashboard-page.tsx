@@ -1,11 +1,13 @@
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { StatCard, TinyLineChart } from '../../components/cards/stat-card'
 import { ActionButton, EmptyState, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api, type AssistantDraft } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
+import { useWeightUnit } from '../../lib/user-preferences'
+import { convertMassFromKg, formatMass, formatMassRate, getWeightUnitLabel, type WeightUnit } from '../../lib/weight-units'
 
 const quickActions = [
   { to: '/nutrition', title: 'Log food', subtitle: 'Meal, photo, recipe, or template', accent: 'amber' },
@@ -18,19 +20,59 @@ function formatCoachBody(body: string | null | undefined) {
   return (body ?? '').replaceAll('**', '').trim()
 }
 
+function formatCoachMassStat(value: string | number | null | undefined, formatter: (next: number) => string) {
+  if (value === null || value === undefined || value === '') {
+    return 'n/a'
+  }
+  if (typeof value === 'number') {
+    return formatter(value)
+  }
+  return value
+}
+
+function buildDefaultAssistantNote(weightUnit: WeightUnit) {
+  return weightUnit === 'lbs'
+    ? 'Weighed 181.7 lbs this morning and ate lunch for 650 kcal with 45P 60C 20F'
+    : 'Weighed 82.4 kg this morning and ate lunch for 650 kcal with 45P 60C 20F'
+}
+
 export function DashboardPage() {
+  const weightUnit = useWeightUnit()
+  const weightUnitLabel = getWeightUnitLabel(weightUnit)
   const dashboardQuery = useQuery({ queryKey: ['dashboard'], queryFn: api.getDashboard })
   const insightsQuery = useQuery({ queryKey: ['insights-summary'], queryFn: () => api.getInsightSummary(90) })
   const briefQuery = useQuery({ queryKey: ['assistant-brief'], queryFn: api.getAssistantBrief, retry: false })
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
-  const [assistantNote, setAssistantNote] = useState('Weighed 82.4 kg this morning and ate lunch for 650 kcal with 45P 60C 20F')
+  const [assistantNote, setAssistantNote] = useState(() => buildDefaultAssistantNote(weightUnit))
   const [assistantResult, setAssistantResult] = useState<Awaited<ReturnType<typeof api.parseAssistantNote>> | null>(null)
 
-  const cards = dashboardQuery.data?.cards ?? []
+  useEffect(() => {
+    const defaultNotes = new Set([buildDefaultAssistantNote('kg'), buildDefaultAssistantNote('lbs')])
+    setAssistantNote((current) => defaultNotes.has(current) ? buildDefaultAssistantNote(weightUnit) : current)
+  }, [weightUnit])
+
+  const cards = (dashboardQuery.data?.cards ?? []).map((card) => {
+    if (card.key === 'weight-trend') {
+      return {
+        ...card,
+        value: typeof card.value === 'number' ? formatMass(card.value, weightUnit) : card.value,
+        detail: typeof card.trend === 'number' ? formatMassRate(card.trend, weightUnit, { signed: true }) : card.detail,
+      }
+    }
+
+    if (card.key === 'last-workout-volume') {
+      return {
+        ...card,
+        value: typeof card.value === 'number' ? formatMass(card.value, weightUnit, { decimals: 0 }) : card.value,
+      }
+    }
+
+    return card
+  })
   const insights = insightsQuery.data?.summary
   const brief = briefQuery.data?.brief
   const calorieSeries = Object.values(insights?.nutrition.daily_calories ?? {}).slice(-7)
-  const weightSeries = insights?.body.trend_7 ?? []
+  const weightSeries = (insights?.body.trend_7 ?? []).map((value) => convertMassFromKg(value, weightUnit))
 
   const parseAssistant = useMutation({
     mutationFn: () => api.parseAssistantNote(assistantNote),
@@ -141,7 +183,7 @@ export function DashboardPage() {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <TinyLineChart title="7-day calories" points={calorieSeries.length ? calorieSeries : [0]} color="#d97706" />
-            <TinyLineChart title="7-day weight trend" points={weightSeries.length ? weightSeries : [0]} color="#fb7185" />
+            <TinyLineChart title={`7-day weight trend (${weightUnitLabel})`} points={weightSeries.length ? weightSeries : [0]} color="#fb7185" />
           </div>
 
           <Panel title="Assistant quick capture" subtitle="Turn a free-form note into reviewable drafts before anything gets written.">
@@ -151,7 +193,9 @@ export function DashboardPage() {
                 value={assistantNote}
                 onChange={setAssistantNote}
                 rows={4}
-                placeholder="Ate dinner for 720 kcal with 55P 70C 18F, and weighed 82.4 kg this morning"
+                placeholder={weightUnit === 'lbs'
+                  ? 'Ate dinner for 720 kcal with 55P 70C 18F, and weighed 181.7 lbs this morning'
+                  : 'Ate dinner for 720 kcal with 55P 70C 18F, and weighed 82.4 kg this morning'}
               />
               <div className="flex flex-wrap gap-2">
                 <ActionButton onClick={() => parseAssistant.mutate()}>{parseAssistant.isPending ? 'Parsing...' : 'Draft actions'}</ActionButton>
@@ -223,11 +267,11 @@ export function DashboardPage() {
             </div>
             <div>
               <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Weekly volume</div>
-              <div className="mt-2 font-display text-2xl">{brief?.stats.weekly_volume_kg ?? Math.round(insights?.training.weekly_volume_kg ?? 0)}</div>
+              <div className="mt-2 font-display text-2xl">{formatCoachMassStat(brief?.stats.weekly_volume_kg ?? Math.round(insights?.training.weekly_volume_kg ?? 0), (value) => formatMass(value, weightUnit, { decimals: 0 }))}</div>
             </div>
             <div>
               <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Weight trend</div>
-              <div className="mt-2 font-display text-2xl">{brief?.stats.weight_trend_kg_per_week ?? (insights?.body.weight_trend_kg_per_week?.toFixed(2) ?? '0.00')}</div>
+              <div className="mt-2 font-display text-2xl">{formatCoachMassStat(brief?.stats.weight_trend_kg_per_week ?? insights?.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit))}</div>
             </div>
           </div>
         </Panel>

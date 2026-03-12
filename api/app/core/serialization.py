@@ -21,6 +21,7 @@ from app.core.models import (
     Routine,
     RoutineExercise,
     SetEntry,
+    UserPreference,
     WeightEntry,
     WorkoutSession,
     WorkoutTemplate,
@@ -29,6 +30,7 @@ from app.core.models import (
 
 
 EXPORT_MODELS = [
+    UserPreference,
     Goal,
     FoodItem,
     Recipe,
@@ -72,7 +74,7 @@ def export_payload(session: Session, user_id: str) -> dict[str, Any]:
             serialized_rows.append(serialized)
         tables[model.__tablename__] = serialized_rows
     return {
-        "version": "0.2.0",
+        "version": "0.3.0",
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "owner": {"user_id": user_id},
         "tables": tables,
@@ -116,6 +118,8 @@ def restore_payload(session: Session, payload: dict[str, Any], user_id: str) -> 
                     values["photo_draft_id"] = None
                 existing_id = next((row[key] for key in primary_keys if key in row), None)
                 existing = session.get(model, existing_id) if existing_id else None
+                if model is UserPreference and existing is None:
+                    existing = session.scalar(select(UserPreference).where(UserPreference.user_id == user_id))
                 if existing and getattr(existing, "user_id", user_id) == user_id:
                     for key, value in values.items():
                         setattr(existing, key, value)

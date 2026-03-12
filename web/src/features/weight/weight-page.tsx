@@ -5,6 +5,8 @@ import { EChart } from '../../components/charts/echart'
 import { ActionButton, DataList, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
+import { useWeightUnit } from '../../lib/user-preferences'
+import { convertMassFromKg, convertMassToKg, formatMass, formatMassInput, formatMassRate, getWeightUnitLabel } from '../../lib/weight-units'
 
 function describeWeeklyTrend(value: number) {
   if (value >= 0.35) return 'Gaining quickly'
@@ -15,6 +17,8 @@ function describeWeeklyTrend(value: number) {
 }
 
 export function WeightPage() {
+  const weightUnit = useWeightUnit()
+  const weightUnitLabel = getWeightUnitLabel(weightUnit)
   const [entryLimit, setEntryLimit] = useState(10)
   const entriesQuery = useQuery({ queryKey: ['weight-entries', entryLimit], queryFn: () => api.listWeightEntries({ limit: entryLimit }) })
   const trendsQuery = useQuery({ queryKey: ['weight-trends'], queryFn: () => api.getWeightTrends(180) })
@@ -28,12 +32,12 @@ export function WeightPage() {
 
   const saveEntry = useMutation({
     mutationFn: () => (editingEntryId ? api.updateWeightEntry(editingEntryId, {
-      weight_kg: Number(draft.weight_kg),
+      weight_kg: convertMassToKg(Number(draft.weight_kg), weightUnit),
       body_fat_pct: draft.body_fat_pct ? Number(draft.body_fat_pct) : undefined,
       waist_cm: draft.waist_cm ? Number(draft.waist_cm) : undefined,
       notes: draft.notes || undefined,
     }) : api.createWeightEntry({
-      weight_kg: Number(draft.weight_kg),
+      weight_kg: convertMassToKg(Number(draft.weight_kg), weightUnit),
       body_fat_pct: draft.body_fat_pct ? Number(draft.body_fat_pct) : undefined,
       waist_cm: draft.waist_cm ? Number(draft.waist_cm) : undefined,
       notes: draft.notes || undefined,
@@ -74,14 +78,14 @@ export function WeightPage() {
   const latestTrendPoint = points.length ? points[points.length - 1] : undefined
 
   const summaryRows = useMemo(() => [
-    { label: 'Latest weight', value: latestEntry ? `${latestEntry.weight_kg} kg` : 'No entry yet' },
-    { label: '7-day average', value: latestTrendPoint ? `${latestTrendPoint.trend_7.toFixed(1)} kg` : 'Waiting for trend data' },
-    { label: '30-day average', value: latestTrendPoint ? `${latestTrendPoint.trend_30.toFixed(1)} kg` : 'Waiting for trend data' },
+    { label: 'Latest weight', value: latestEntry ? formatMass(latestEntry.weight_kg, weightUnit) : 'No entry yet' },
+    { label: '7-day average', value: latestTrendPoint ? formatMass(latestTrendPoint.trend_7, weightUnit) : 'Waiting for trend data' },
+    { label: '30-day average', value: latestTrendPoint ? formatMass(latestTrendPoint.trend_30, weightUnit) : 'Waiting for trend data' },
     {
       label: 'Weekly rate',
-      value: `${trendsQuery.data?.weight_trend_kg_per_week?.toFixed(2) ?? '0.00'} kg/week`,
+      value: formatMassRate(trendsQuery.data?.weight_trend_kg_per_week ?? 0, weightUnit),
     },
-  ], [latestEntry, latestTrendPoint, trendsQuery.data?.weight_trend_kg_per_week])
+  ], [latestEntry, latestTrendPoint, trendsQuery.data?.weight_trend_kg_per_week, weightUnit])
 
   return (
     <div className="space-y-4">
@@ -102,24 +106,24 @@ export function WeightPage() {
               }}
             >
               <LabelledInput
-                label="Weight (kg)"
+                label={`Weight (${weightUnitLabel})`}
                 type="number"
                 step="0.1"
                 value={draft.weight_kg}
                 onChange={(value) => setDraft((current) => ({ ...current, weight_kg: value }))}
-                placeholder="82.4"
+                placeholder={weightUnit === 'lbs' ? '181.7' : '82.4'}
               />
 
               <div className="grid gap-3 grid-cols-2">
                 <div className="rounded-[22px] bg-slate-50 p-4 ring-1 ring-slate-200">
                   <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Latest</div>
-                  <div className="mt-2 font-display text-3xl text-slate-950">{latestEntry ? `${latestEntry.weight_kg}` : '--'}</div>
-                  <div className="mt-1 text-sm text-slate-500">kg</div>
+                  <div className="mt-2 font-display text-3xl text-slate-950">{latestEntry ? formatMass(latestEntry.weight_kg, weightUnit, { includeUnit: false }) : '--'}</div>
+                  <div className="mt-1 text-sm text-slate-500">{weightUnitLabel}</div>
                 </div>
                 <div className="rounded-[22px] bg-slate-950 p-4 text-canvas">
                   <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Weekly trend</div>
-                  <div className="mt-2 font-display text-3xl">{trendsQuery.data?.weight_trend_kg_per_week?.toFixed(2) ?? '0.00'}</div>
-                  <div className="mt-1 text-sm text-slate-300">kg per week</div>
+                  <div className="mt-2 font-display text-3xl">{formatMassRate(trendsQuery.data?.weight_trend_kg_per_week ?? 0, weightUnit, { includeUnit: false })}</div>
+                  <div className="mt-1 text-sm text-slate-300">{weightUnitLabel} per week</div>
                 </div>
               </div>
 
@@ -171,7 +175,7 @@ export function WeightPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-xs uppercase tracking-[0.2em] text-slate-500">{new Date(entry.logged_at).toLocaleDateString()}</div>
-                      <div className="mt-2 font-display text-3xl text-slate-950">{entry.weight_kg} kg</div>
+                      <div className="mt-2 font-display text-3xl text-slate-950">{formatMass(entry.weight_kg, weightUnit)}</div>
                     </div>
                     <div className="rounded-full bg-slate-100 px-3 py-2 text-sm text-slate-700">
                       {'sync_status' in entry && entry.sync_status === 'queued'
@@ -187,7 +191,7 @@ export function WeightPage() {
                       onClick={() => {
                         setEditingEntryId(entry.id)
                         setDraft({
-                          weight_kg: String(entry.weight_kg),
+                          weight_kg: formatMassInput(entry.weight_kg, weightUnit),
                           body_fat_pct: entry.body_fat_pct != null ? String(entry.body_fat_pct) : '',
                           waist_cm: entry.waist_cm != null ? String(entry.waist_cm) : '',
                           notes: entry.notes ?? '',
@@ -232,27 +236,27 @@ export function WeightPage() {
                   },
                   series: [
                     {
-                      name: 'Weight',
+                      name: `Weight (${weightUnitLabel})`,
                       type: 'line',
                       smooth: true,
-                      data: points.map((point) => point.weight_kg),
+                      data: points.map((point) => convertMassFromKg(point.weight_kg, weightUnit)),
                       lineStyle: { color: '#fb7185', width: 2 },
                       symbol: 'circle',
                       symbolSize: 6,
                     },
                     {
-                      name: '7-day',
+                      name: `7-day (${weightUnitLabel})`,
                       type: 'line',
                       smooth: true,
-                      data: points.map((point) => point.trend_7),
+                      data: points.map((point) => convertMassFromKg(point.trend_7, weightUnit)),
                       lineStyle: { color: '#0ea5e9', width: 2 },
                       symbol: 'none',
                     },
                     {
-                      name: '30-day',
+                      name: `30-day (${weightUnitLabel})`,
                       type: 'line',
                       smooth: true,
-                      data: points.map((point) => point.trend_30),
+                      data: points.map((point) => convertMassFromKg(point.trend_30, weightUnit)),
                       lineStyle: { color: '#84cc16', width: 2 },
                       symbol: 'none',
                     },
@@ -270,7 +274,7 @@ export function WeightPage() {
                 <div className="text-xs uppercase tracking-[0.2em]">Current read</div>
                 <div className="mt-2 font-display text-2xl">{describeWeeklyTrend(trendsQuery.data?.weight_trend_kg_per_week ?? 0)}</div>
                 <p className="mt-2 leading-6">
-                  Weekly change is {trendsQuery.data?.weight_trend_kg_per_week?.toFixed(2) ?? '0.00'} kg/week. Use that as the input for calorie adjustments, not one noisy weigh-in.
+                  Weekly change is {formatMassRate(trendsQuery.data?.weight_trend_kg_per_week ?? 0, weightUnit)}. Use that as the input for calorie adjustments, not one noisy weigh-in.
                 </p>
               </div>
 

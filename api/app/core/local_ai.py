@@ -970,17 +970,20 @@ def _heuristic_text_drafts(text: str) -> dict[str, Any]:
     lowered = text.lower()
     warnings: list[str] = []
     drafts: list[dict[str, Any]] = []
+    pounds_per_kg = 2.2046226218
 
-    weight_match = re.search(r"(?P<weight>\d+(?:\.\d+)?)\s*kg", lowered)
+    weight_match = re.search(r"(?P<weight>\d+(?:\.\d+)?)\s*(?P<unit>kg|kgs|lb|lbs)", lowered)
     if weight_match and any(keyword in lowered for keyword in ("weigh", "weight", "scale", "morning", "bf")):
         weight_value = float(weight_match.group("weight"))
+        weight_unit = weight_match.group("unit")
+        weight_kg = weight_value if weight_unit.startswith("kg") else weight_value / pounds_per_kg
         body_fat_match = re.search(r"(?P<body_fat>\d+(?:\.\d+)?)\s*%(\s*bf)?", lowered)
         drafts.append(
             {
                 "kind": "weight_entry",
-                "summary": f"Log weigh-in at {weight_value:.1f} kg",
+                "summary": f"Log weigh-in at {weight_value:.1f} {'lbs' if weight_unit.startswith('lb') else 'kg'}",
                 "payload": {
-                    "weight_kg": weight_value,
+                    "weight_kg": round(weight_kg, 3),
                     "body_fat_pct": float(body_fat_match.group("body_fat")) if body_fat_match else None,
                 },
             }
@@ -1015,7 +1018,7 @@ def _heuristic_text_drafts(text: str) -> dict[str, Any]:
         )
 
     workout_match = re.search(
-        r"(?P<exercise>[a-z][a-z0-9\s\-]+?)\s+(?P<sets>\d+)x(?P<reps>\d+)(?:\s*@\s*(?P<load>\d+(?:\.\d+)?))?",
+        r"(?P<exercise>[a-z][a-z0-9\s\-]+?)\s+(?P<sets>\d+)x(?P<reps>\d+)(?:\s*@\s*(?P<load>\d+(?:\.\d+)?)(?:\s*(?P<load_unit>kg|kgs|lb|lbs))?)?",
         lowered,
     )
     if workout_match:
@@ -1023,6 +1026,8 @@ def _heuristic_text_drafts(text: str) -> dict[str, Any]:
         sets = int(workout_match.group("sets"))
         reps = int(workout_match.group("reps"))
         load = _coerce_float(workout_match.group("load"))
+        if load is not None and (workout_match.group("load_unit") or "").startswith("lb"):
+            load = round(load / pounds_per_kg, 3)
         drafts.append(
             {
                 "kind": "workout_session",

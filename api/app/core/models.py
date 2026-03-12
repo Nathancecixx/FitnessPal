@@ -92,6 +92,14 @@ class ApiKey(TimestampMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class UserPreference(TimestampMixin, Base):
+    __tablename__ = "user_preferences"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_users.id"), unique=True, index=True)
+    weight_unit: Mapped[str] = mapped_column(String(8), default="kg")
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

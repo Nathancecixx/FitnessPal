@@ -24,6 +24,7 @@ from app.core.models import (
     WorkoutSession,
     WorkoutTemplate,
     WorkoutTemplateExercise,
+    UserPreference,
 )
 from app.core.security import Actor, require_scope
 from app.core.serialization import export_payload, restore_payload
@@ -401,6 +402,20 @@ class UpdateAndScopeTests(unittest.TestCase):
 
         self.assertIsNotNone(restored)
         self.assertIsNone(restored.photo_draft_id)
+
+    def test_export_and_restore_include_user_preferences(self) -> None:
+        with self.SessionLocal() as session:
+            session.add(UserPreference(user_id=self.actor.user_id, weight_unit="lbs"))
+            session.commit()
+
+            exported = export_payload(session, self.actor.user_id)
+            self.assertEqual(exported["tables"]["user_preferences"][0]["weight_unit"], "lbs")
+
+            restore_payload(session, exported, self.actor.user_id)
+            restored = session.scalar(select(UserPreference).where(UserPreference.user_id == self.actor.user_id))
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.weight_unit, "lbs")
 
     def test_restore_payload_rejects_malformed_tables(self) -> None:
         with self.SessionLocal() as session:

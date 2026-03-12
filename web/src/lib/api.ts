@@ -10,6 +10,7 @@ import {
   type QueuedSyncRequest,
 } from './offline'
 import { queryClient } from './query-client'
+import type { WeightUnit } from './weight-units'
 
 export type DashboardCard = {
   key: string
@@ -377,6 +378,12 @@ export type SessionInfo = {
     scopes: string[]
   }
   user: ManagedUser | null
+}
+
+export type UserPreferences = {
+  weight_unit: WeightUnit
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export type UserSetupResponse = {
@@ -916,6 +923,8 @@ export const api = {
   }),
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
   getSession: () => request<SessionInfo>('/auth/session'),
+  getUserPreferences: () => request<UserPreferences>('/preferences'),
+  updateUserPreferences: (payload: { weight_unit: WeightUnit }) => request<UserPreferences>('/preferences', { method: 'PUT', body: JSON.stringify(payload) }),
   getDashboard: () => request<{ cards: DashboardCard[]; available_modules: string[] }>('/dashboard'),
   getRuntime: () => request<RuntimeInfo>('/runtime'),
   listJobs: (params: { status?: string; limit?: number; cursor?: string | null } = {}) => request<PagedListResponse<JobRecord>>(`/jobs${buildQueryString(params)}`),

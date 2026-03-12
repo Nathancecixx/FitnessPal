@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -39,7 +39,7 @@ from app.core.security import (
 )
 from app.core.serialization import export_payload, restore_payload
 from app.core.storage import write_json_export
-from app.core.models import AiFeatureBinding, ApiKey, AppUser, ExportRecord, FoodItem, Goal, JobRecord, MealEntry, SessionToken, WeightEntry, WorkoutSession, utcnow
+from app.core.models import AiFeatureBinding, ApiKey, AppUser, ExportRecord, FoodItem, Goal, JobRecord, MealEntry, SessionToken, UserPreference, WeightEntry, WorkoutSession, utcnow
 
 
 settings = get_settings()
@@ -90,6 +90,10 @@ class AssistantParseRequest(BaseModel):
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     is_admin: bool = False
+
+
+class UserPreferencesUpdate(BaseModel):
+    weight_unit: Literal["kg", "lbs"] = "kg"
 
 
 def admin_write(actor: Actor = Depends(platform_write)) -> Actor:
@@ -190,6 +194,18 @@ def build_auth_payload(user: AppUser) -> dict[str, Any]:
     }
 
 
+def load_user_preferences(session: Session, user_id: str) -> UserPreference | None:
+    return session.scalar(select(UserPreference).where(UserPreference.user_id == user_id))
+
+
+def serialize_user_preferences(preferences: UserPreference | None) -> dict[str, Any]:
+    return {
+        "weight_unit": preferences.weight_unit if preferences else "kg",
+        "created_at": preferences.created_at.isoformat() if preferences else None,
+        "updated_at": preferences.updated_at.isoformat() if preferences else None,
+    }
+
+
 @router.get("/health")
 def healthcheck(session: Session = Depends(get_session)) -> dict[str, Any]:
     return {
@@ -287,6 +303,29 @@ def current_session(actor: Actor = Depends(platform_read), session: Session = De
         },
         "user": serialize_user(user) if user else None,
     }
+
+
+@router.get("/preferences")
+def get_user_preferences(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
+    return serialize_user_preferences(load_user_preferences(session, actor.user_id))
+
+
+@router.put("/preferences")
+def update_user_preferences(
+    payload: UserPreferencesUpdate,
+    actor: Actor = Depends(platform_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    preferences = load_user_preferences(session, actor.user_id)
+    if preferences is None:
+        preferences = UserPreference(user_id=actor.user_id)
+        session.add(preferences)
+
+    preferences.weight_unit = payload.weight_unit
+    session.commit()
+    session.refresh(preferences)
+    write_audit(session, actor, "preferences.updated", "user_preferences", preferences.id, payload.model_dump())
+    return serialize_user_preferences(preferences)
 
 
 @router.get("/users")

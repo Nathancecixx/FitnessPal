@@ -1,9 +1,10 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { ActionButton, DataList, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api, type UserSetupResponse } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
+import { useUserPreferencesQuery } from '../../lib/user-preferences'
 import { AiAdminPanel } from './ai-admin-panel'
 
 const apiKeyPresets = [
@@ -34,6 +35,7 @@ export function SettingsPage() {
   const [jobLimit, setJobLimit] = useState(20)
   const [exportLimit, setExportLimit] = useState(10)
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession })
+  const preferencesQuery = useUserPreferencesQuery()
   const isAdmin = Boolean(sessionQuery.data?.user?.is_admin)
   const goalsQuery = useQuery({ queryKey: ['goals'], queryFn: api.listGoals })
   const apiKeysQuery = useQuery({ queryKey: ['api-keys'], queryFn: api.listApiKeys })
@@ -54,7 +56,14 @@ export function SettingsPage() {
   const [restoreStatus, setRestoreStatus] = useState('')
   const [passwordDraft, setPasswordDraft] = useState({ current: '', next: '', confirm: '' })
   const [userDraft, setUserDraft] = useState({ username: '', isAdmin: false })
+  const [weightUnitDraft, setWeightUnitDraft] = useState<'kg' | 'lbs'>('kg')
   const [setupResult, setSetupResult] = useState<UserSetupResponse | null>(null)
+
+  useEffect(() => {
+    if (preferencesQuery.data?.weight_unit) {
+      setWeightUnitDraft(preferencesQuery.data.weight_unit)
+    }
+  }, [preferencesQuery.data?.weight_unit])
 
   const createGoal = useMutation({
     mutationFn: () => api.createGoal({
@@ -118,6 +127,14 @@ export function SettingsPage() {
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
         queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
+    },
+  })
+
+  const updatePreferences = useMutation({
+    mutationFn: () => api.updateUserPreferences({ weight_unit: weightUnitDraft }),
+    onSuccess: async (result) => {
+      queryClient.setQueryData(['user-preferences'], result)
+      await queryClient.invalidateQueries({ queryKey: ['user-preferences'] })
     },
   })
 
@@ -319,6 +336,29 @@ export function SettingsPage() {
         </div>
 
         <div className="space-y-4">
+          <Panel title="Preferences" subtitle="Choose how bodyweight and lifting loads are displayed across the app.">
+            <form className="grid gap-3" onSubmit={(event) => {
+              event.preventDefault()
+              updatePreferences.mutate()
+            }}
+            >
+              <LabelledSelect
+                label="Weight unit"
+                value={weightUnitDraft}
+                onChange={(value) => setWeightUnitDraft(value as 'kg' | 'lbs')}
+                options={[
+                  { label: 'Kilograms (kg)', value: 'kg' },
+                  { label: 'Pounds (lbs)', value: 'lbs' },
+                ]}
+              />
+              {updatePreferences.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{updatePreferences.error.message}</div> : null}
+              {updatePreferences.isSuccess ? <div className="app-status app-status-success rounded-2xl px-4 py-3 text-sm">Preferences updated.</div> : null}
+              <ActionButton type="submit" disabled={updatePreferences.isPending || preferencesQuery.data?.weight_unit === weightUnitDraft}>
+                Save preferences
+              </ActionButton>
+            </form>
+          </Panel>
+
           <Panel title="Integration API keys" subtitle="Issue scoped local tokens for private scripts, automations, and trusted clients.">
             <LabelledInput label="Key name" value={apiKeyName} onChange={setApiKeyName} />
             <div className="mt-3">

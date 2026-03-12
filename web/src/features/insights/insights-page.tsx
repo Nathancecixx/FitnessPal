@@ -5,6 +5,8 @@ import { EChart } from '../../components/charts/echart'
 import { ActionButton, DataList, EmptyState, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api, type AssistantCoachAdvice } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
+import { useWeightUnit } from '../../lib/user-preferences'
+import { convertMassFromKg, formatMass, formatMassRate, getWeightUnitLabel } from '../../lib/weight-units'
 
 const coachPrompts = [
   'What should I focus on over the next 3 days based on my current logs?',
@@ -44,6 +46,16 @@ function formatAdherence(value: string | number | null | undefined) {
   return value
 }
 
+function formatCoachMassStat(value: string | number | null | undefined, formatter: (next: number) => string) {
+  if (value === null || value === undefined || value === '') {
+    return 'n/a'
+  }
+  if (typeof value === 'number') {
+    return formatter(value)
+  }
+  return value
+}
+
 function coachSourceLabel(advice: AssistantCoachAdvice | undefined, briefSource: string | undefined, briefProvider: string | null | undefined, briefModel: string | null | undefined) {
   const source = advice?.source ?? briefSource
   const provider = advice?.provider ?? briefProvider
@@ -53,6 +65,8 @@ function coachSourceLabel(advice: AssistantCoachAdvice | undefined, briefSource:
 }
 
 export function InsightsPage() {
+  const weightUnit = useWeightUnit()
+  const weightUnitLabel = getWeightUnitLabel(weightUnit)
   const insightsQuery = useQuery({ queryKey: ['insights-summary'], queryFn: () => api.getInsightSummary(90) })
   const briefQuery = useQuery({ queryKey: ['assistant-brief'], queryFn: api.getAssistantBrief, retry: false })
   const [coachPrompt, setCoachPrompt] = useState('What should I focus on over the next 3 days based on my current logs?')
@@ -126,10 +140,10 @@ export function InsightsPage() {
     { label: 'Avg calories (7d)', value: formatSimpleMetric(coachStats['average_calories_7'] ?? Math.round(payload.nutrition.average_calories_7), 'kcal') },
     { label: 'Goal calories', value: formatSimpleMetric(coachStats['goal_calories'] ?? payload.nutrition.goal_calories, 'kcal') },
     { label: 'Adherence', value: formatAdherence(coachStats['adherence_ratio'] ?? payload.nutrition.adherence_ratio) },
-    { label: 'Weekly volume', value: formatSimpleMetric(coachStats['weekly_volume_kg'] ?? Math.round(payload.training.weekly_volume_kg), 'kg') },
+    { label: 'Weekly volume', value: formatCoachMassStat(coachStats['weekly_volume_kg'] ?? Math.round(payload.training.weekly_volume_kg), (value) => formatMass(value, weightUnit, { decimals: 0 })) },
     { label: 'Sessions (7d)', value: formatSimpleMetric(coachStats['session_count_7'] ?? payload.training.session_count_7) },
     { label: 'PR count', value: formatSimpleMetric(coachStats['pr_count'] ?? payload.training.pr_count) },
-    { label: 'Weight trend', value: formatSimpleMetric(coachStats['weight_trend_kg_per_week'] ?? payload.body.weight_trend_kg_per_week, 'kg/week') },
+    { label: 'Weight trend', value: formatCoachMassStat(coachStats['weight_trend_kg_per_week'] ?? payload.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit)) },
   ]
 
   return (
@@ -183,11 +197,11 @@ export function InsightsPage() {
                 </div>
                 <div className="rounded-[22px] border border-white/10 bg-white/10 px-4 py-4">
                   <div className="text-[11px] uppercase tracking-[0.22em] text-slate-300">Weekly volume</div>
-                  <div className="mt-2 font-display text-3xl">{formatSimpleMetric(coachStats['weekly_volume_kg'] ?? Math.round(payload.training.weekly_volume_kg), 'kg')}</div>
+                  <div className="mt-2 font-display text-3xl">{formatCoachMassStat(coachStats['weekly_volume_kg'] ?? Math.round(payload.training.weekly_volume_kg), (value) => formatMass(value, weightUnit, { decimals: 0 }))}</div>
                 </div>
                 <div className="rounded-[22px] border border-white/10 bg-white/10 px-4 py-4">
                   <div className="text-[11px] uppercase tracking-[0.22em] text-slate-300">Weight trend</div>
-                  <div className="mt-2 font-display text-3xl">{formatSimpleMetric(coachStats['weight_trend_kg_per_week'] ?? payload.body.weight_trend_kg_per_week, 'kg/week')}</div>
+                  <div className="mt-2 font-display text-3xl">{formatCoachMassStat(coachStats['weight_trend_kg_per_week'] ?? payload.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit))}</div>
                 </div>
               </div>
             </div>
@@ -296,11 +310,11 @@ export function InsightsPage() {
                 </div>
                 <div className="rounded-[20px] bg-white px-4 py-3">
                   <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Volume</div>
-                  <div className="mt-2 font-display text-2xl text-slate-950">{Math.round(payload.training.weekly_volume_kg)} kg</div>
+                  <div className="mt-2 font-display text-2xl text-slate-950">{formatMass(payload.training.weekly_volume_kg, weightUnit, { decimals: 0 })}</div>
                 </div>
                 <div className="rounded-[20px] bg-white px-4 py-3">
                   <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Weight trend</div>
-                  <div className="mt-2 font-display text-2xl text-slate-950">{payload.body.weight_trend_kg_per_week.toFixed(2)} kg/week</div>
+                  <div className="mt-2 font-display text-2xl text-slate-950">{formatMassRate(payload.body.weight_trend_kg_per_week, weightUnit)}</div>
                 </div>
               </div>
             </div>
@@ -337,8 +351,8 @@ export function InsightsPage() {
                   xAxis: { type: 'category', data: payload.body.trend_7.map((_, index) => index + 1) },
                   yAxis: { type: 'value' },
                   series: [
-                    { type: 'line', smooth: true, data: payload.body.trend_7, lineStyle: { color: '#fb7185' } },
-                    { type: 'line', smooth: true, data: payload.body.trend_30, lineStyle: { color: '#84cc16' } },
+                    { name: `7-day (${weightUnitLabel})`, type: 'line', smooth: true, data: payload.body.trend_7.map((value) => convertMassFromKg(value, weightUnit)), lineStyle: { color: '#fb7185' } },
+                    { name: `30-day (${weightUnitLabel})`, type: 'line', smooth: true, data: payload.body.trend_30.map((value) => convertMassFromKg(value, weightUnit)), lineStyle: { color: '#84cc16' } },
                   ],
                 }}
               />
