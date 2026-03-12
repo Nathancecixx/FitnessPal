@@ -390,7 +390,7 @@ export function NutritionPage() {
                 if (file) uploadPhoto.mutate(file)
               }} />
             </label>
-            {photoStatus ? <div className="mt-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">{photoStatus}</div> : null}
+            {photoStatus ? <div className="app-status app-status-warning mt-3 rounded-2xl px-4 py-3 text-sm">{photoStatus}</div> : null}
 
             <div className="mt-4 space-y-3">
               {(photosQuery.data?.items ?? []).slice(0, 3).map((draft) => {
@@ -657,7 +657,7 @@ export function NutritionPage() {
                     }} />
                   </label>
                 </div>
-                {importStatus ? <div className="mt-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">{importStatus}</div> : null}
+                {importStatus ? <div className="app-status app-status-warning mt-3 rounded-2xl px-4 py-3 text-sm">{importStatus}</div> : null}
               </div>
               <form className="grid gap-3 sm:grid-cols-2" onSubmit={(event) => { event.preventDefault(); createFood.mutate() }}>
                 <div className="sm:col-span-2"><LabelledInput label="Food name" value={foodDraft.name} onChange={(value) => setFoodDraft((current) => ({ ...current, name: value }))} /></div>

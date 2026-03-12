@@ -211,7 +211,7 @@ export function InsightsPage() {
             {coachWatchouts.length ? (
               <div className="grid gap-3 md:grid-cols-2">
                 {coachWatchouts.map((item) => (
-                  <div key={item} className="rounded-[24px] bg-rose-50 px-4 py-4 text-sm leading-6 text-rose-900 ring-1 ring-rose-100">
+                  <div key={item} className="app-status app-status-danger rounded-[24px] px-4 py-4 text-sm leading-6">
                     {item}
                   </div>
                 ))}
@@ -262,7 +262,7 @@ export function InsightsPage() {
             </div>
 
             {askCoach.isError ? (
-              <div className="rounded-[22px] bg-rose-50 px-4 py-3 text-sm text-rose-900">
+              <div className="app-status app-status-danger rounded-[22px] px-4 py-3 text-sm">
                 {askCoach.error.message}
               </div>
             ) : null}
@@ -364,7 +364,7 @@ export function InsightsPage() {
             {payload.recovery_flags.length ? (
               <div className="space-y-3">
                 {payload.recovery_flags.map((flag) => (
-                  <div key={flag} className="rounded-[24px] bg-rose-50 px-4 py-4 text-sm text-rose-900">
+                  <div key={flag} className="app-status app-status-danger rounded-[24px] px-4 py-4 text-sm">
                     {flag}
                   </div>
                 ))}

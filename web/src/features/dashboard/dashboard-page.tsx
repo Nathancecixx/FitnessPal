@@ -156,9 +156,9 @@ export function DashboardPage() {
               <div className="flex flex-wrap gap-2">
                 <ActionButton onClick={() => parseAssistant.mutate()}>{parseAssistant.isPending ? 'Parsing...' : 'Draft actions'}</ActionButton>
               </div>
-              {parseAssistant.isError ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{parseAssistant.error.message}</div> : null}
+              {parseAssistant.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{parseAssistant.error.message}</div> : null}
               {assistantResult?.warnings?.length ? (
-                <div className="space-y-2 rounded-[22px] bg-amber-50 p-4 text-sm text-amber-950">
+                <div className="app-status app-status-warning space-y-2 rounded-[22px] p-4 text-sm">
                   {assistantResult.warnings.map((warning) => <div key={warning}>{warning}</div>)}
                 </div>
               ) : null}
@@ -210,7 +210,7 @@ export function DashboardPage() {
                 {note}
               </div>
             ))}
-            {refreshBrief.isError ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{refreshBrief.error.message}</div> : null}
+            {refreshBrief.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{refreshBrief.error.message}</div> : null}
             {!brief && !insights?.recommendations?.length ? (
               <EmptyState title="No recommendations yet" body="As soon as the app has enough meals, workouts, and weigh-ins it will start surfacing a branded coach brief here." />
             ) : null}

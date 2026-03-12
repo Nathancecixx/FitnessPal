@@ -254,7 +254,7 @@ export function AiAdminPanel() {
   return (
     <div className="space-y-4">
       <Panel title="Coach Control" subtitle="Provider profiles, feature routing, and persona settings for the in-app AI coach.">
-        {status ? <div className="mb-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">{status}</div> : null}
+        {status ? <div className="app-status app-status-warning mb-4 rounded-2xl px-4 py-3 text-sm">{status}</div> : null}
         <div className="mb-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
           Cloud API keys are stored encrypted. Set <code>FITNESSPAL_CONFIG_SECRET</code> on the server before saving OpenAI or Anthropic credentials.
         </div>

@@ -266,8 +266,8 @@ export function WeightPage() {
 
           <Panel title="What the trend says" subtitle="A quick reading for calories, recovery, and expectations.">
             <div className="space-y-4">
-              <div className="rounded-[24px] bg-amber-50 p-4 text-sm text-amber-950">
-                <div className="text-xs uppercase tracking-[0.2em] text-amber-700">Current read</div>
+              <div className="app-status app-status-warning rounded-[24px] p-4 text-sm">
+                <div className="text-xs uppercase tracking-[0.2em]">Current read</div>
                 <div className="mt-2 font-display text-2xl">{describeWeeklyTrend(trendsQuery.data?.weight_trend_kg_per_week ?? 0)}</div>
                 <p className="mt-2 leading-6">
                   Weekly change is {trendsQuery.data?.weight_trend_kg_per_week?.toFixed(2) ?? '0.00'} kg/week. Use that as the input for calorie adjustments, not one noisy weigh-in.

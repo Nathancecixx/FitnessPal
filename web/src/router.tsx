@@ -13,7 +13,7 @@ const LazySettingsPage = lazy(async () => ({ default: (await import('./features/
 const LazySetupPasswordPage = lazy(async () => ({ default: (await import('./features/auth/setup-password-page')).SetupPasswordPage }))
 
 function LoadingFallback() {
-  return <div className="rounded-[24px] bg-white/80 px-4 py-8 text-center text-sm text-slate-500 shadow-halo">Loading page...</div>
+  return <div className="app-panel rounded-[24px] border px-4 py-8 text-center text-sm app-text-muted shadow-halo">Loading page...</div>
 }
 
 function DashboardPage() {

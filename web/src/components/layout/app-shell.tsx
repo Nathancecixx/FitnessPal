@@ -83,7 +83,7 @@ function LoginScreen(props: { theme: ThemeMode; onToggleTheme: () => void }) {
             <input className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-[16px] text-white outline-none" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
           </label>
           <button className="min-h-[52px] rounded-full bg-lime px-4 py-3 text-sm font-semibold text-slate-950" type="submit">Sign in</button>
-          {login.isError ? <div className="rounded-2xl bg-rose-500/15 px-4 py-3 text-sm text-rose-100">{login.error.message}</div> : null}
+          {login.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{login.error.message}</div> : null}
         </form>
       </div>
     </div>
@@ -92,7 +92,7 @@ function LoginScreen(props: { theme: ThemeMode; onToggleTheme: () => void }) {
 
 function MobileNav({ pathname }: { pathname: string }) {
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200/80 bg-white/92 backdrop-blur lg:hidden">
+    <nav className="app-panel-strong fixed inset-x-0 bottom-0 z-30 border-t backdrop-blur lg:hidden">
       <div className="mx-auto flex max-w-screen-sm gap-2 overflow-x-auto px-3 pb-[calc(0.85rem+env(safe-area-inset-bottom))] pt-3">
         {navItems.map((item) => {
           const active = pathname === item.to
@@ -147,14 +147,14 @@ export function AppShell() {
   }, [sessionUser?.id])
 
   if (sessionQuery.isLoading) {
-    return <div className="flex min-h-screen items-center justify-center font-display text-3xl text-slate-700">Booting FitnessPal...</div>
+    return <div className="app-text-muted flex min-h-screen items-center justify-center font-display text-3xl">Booting FitnessPal...</div>
   }
 
   if (isSetupRoute && sessionQuery.isError) {
     return (
       <div className="min-h-screen px-3 py-4 md:px-4">
         <div className="mx-auto max-w-5xl">
-          <div className="mb-4 flex items-center justify-between rounded-[28px] border border-white/80 bg-white/82 px-4 py-4 shadow-halo backdrop-blur">
+          <div className="app-panel mb-4 flex items-center justify-between rounded-[28px] border px-4 py-4 shadow-halo backdrop-blur">
             <div>
               <div className="text-[11px] uppercase tracking-[0.24em] text-slate-400">FitnessPal</div>
               <div className="mt-1 font-display text-3xl leading-none text-slate-950">Password setup</div>
@@ -172,7 +172,7 @@ export function AppShell() {
   }
 
   return (
-    <div className="min-h-screen font-sans text-slate-900">
+    <div className="app-text-primary min-h-screen font-sans">
       <div className="mx-auto max-w-[1600px] lg:grid lg:min-h-screen lg:grid-cols-[260px_minmax(0,1fr)] lg:gap-4 lg:px-4 lg:py-4">
         <aside className="sticky top-4 hidden h-[calc(100vh-2rem)] self-start rounded-[32px] bg-slate-950/95 p-6 text-white shadow-halo backdrop-blur lg:flex lg:flex-col">
           <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
@@ -198,7 +198,7 @@ export function AppShell() {
 
         <div className="pb-24 lg:pb-0">
           <header className="sticky top-0 z-20 px-3 pt-3 lg:px-0 lg:pt-0">
-            <div className="rounded-[28px] border border-white/80 bg-white/82 px-4 py-4 shadow-halo backdrop-blur md:px-5">
+            <div className="app-panel rounded-[28px] border px-4 py-4 shadow-halo backdrop-blur md:px-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[11px] uppercase tracking-[0.24em] text-slate-400">FitnessPal</div>
@@ -210,13 +210,13 @@ export function AppShell() {
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
-                  <div className="hidden rounded-[22px] bg-slate-100 px-4 py-3 text-right text-xs text-slate-500 md:block">
+                  <div className="app-card-soft hidden rounded-[22px] px-4 py-3 text-right text-xs md:block">
                     <div className="font-semibold text-slate-900">{sessionUser?.username}</div>
                     <div>{sessionUser?.is_admin ? 'Admin' : 'User'}</div>
                   </div>
                   <button
                     type="button"
-                    className="rounded-full bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-700 ring-1 ring-slate-200"
+                    className="app-button-secondary rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em]"
                     onClick={() => logout.mutate()}
                   >
                     Sign out

@@ -21,8 +21,8 @@ export function StatCard({ card }: { card: DashboardCard }) {
 
 export function TinyLineChart(props: { title: string; points: number[]; color: string }) {
   return (
-    <div className="rounded-[24px] border border-slate-200 bg-white/88 p-4 shadow-halo md:rounded-[28px] md:p-5">
-      <div className="font-display text-lg text-slate-950">{props.title}</div>
+    <div className="app-panel rounded-[24px] border p-4 shadow-halo md:rounded-[28px] md:p-5">
+      <div className="app-text-primary font-display text-lg">{props.title}</div>
       <EChart
         style={{ height: 160 }}
         option={{

@@ -196,10 +196,10 @@ export function SettingsPage() {
                 <LabelledInput label="New password" type="password" value={passwordDraft.next} onChange={(value) => setPasswordDraft((current) => ({ ...current, next: value }))} />
                 <LabelledInput label="Confirm password" type="password" value={passwordDraft.confirm} onChange={(value) => setPasswordDraft((current) => ({ ...current, confirm: value }))} />
                 {passwordDraft.next && passwordDraft.confirm && passwordDraft.next !== passwordDraft.confirm ? (
-                  <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">New passwords do not match.</div>
+                  <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">New passwords do not match.</div>
                 ) : null}
-                {changePassword.isError ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{changePassword.error.message}</div> : null}
-                {changePassword.isSuccess ? <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-900">Password updated.</div> : null}
+                {changePassword.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{changePassword.error.message}</div> : null}
+                {changePassword.isSuccess ? <div className="app-status app-status-success rounded-2xl px-4 py-3 text-sm">Password updated.</div> : null}
                 <ActionButton type="submit" disabled={changePassword.isPending || passwordDraft.next.length < 12 || passwordDraft.next !== passwordDraft.confirm}>
                   Update password
                 </ActionButton>
@@ -220,7 +220,7 @@ export function SettingsPage() {
                     <input type="checkbox" checked={userDraft.isAdmin} onChange={(event) => setUserDraft((current) => ({ ...current, isAdmin: event.target.checked }))} />
                     Create as admin
                   </label>
-                  {createUser.isError ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-900">{createUser.error.message}</div> : null}
+                  {createUser.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{createUser.error.message}</div> : null}
                   <ActionButton type="submit" disabled={!userDraft.username.trim() || createUser.isPending}>Create user</ActionButton>
                 </form>
 
@@ -290,7 +290,7 @@ export function SettingsPage() {
                 </label>
                 <ActionButton onClick={handleRestoreSubmit}>Restore export</ActionButton>
               </div>
-              {restoreStatus ? <div className="mt-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">{restoreStatus}</div> : null}
+              {restoreStatus ? <div className="app-status app-status-warning mt-3 rounded-2xl px-4 py-3 text-sm">{restoreStatus}</div> : null}
             </div>
           </Panel>
 
@@ -305,7 +305,7 @@ export function SettingsPage() {
                     </div>
                     <div className="text-xs uppercase tracking-[0.15em] text-slate-400">{new Date(job.created_at).toLocaleString()}</div>
                   </div>
-                  {job.last_error ? <div className="mt-3 rounded-2xl bg-rose-50 px-3 py-2 text-rose-900">{job.last_error}</div> : null}
+                  {job.last_error ? <div className="app-status app-status-danger mt-3 rounded-2xl px-3 py-2">{job.last_error}</div> : null}
                 </div>
               ))}
               {!jobsQuery.data?.items?.length ? <EmptyState title="No jobs yet" body="As you log meals, upload photos, or trigger backups, the worker queue will appear here." /> : null}
