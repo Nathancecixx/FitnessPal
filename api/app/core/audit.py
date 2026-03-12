@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.core.models import AuditLog
@@ -24,7 +25,7 @@ def write_audit(
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
-            payload_json=payload or {},
+            payload_json=jsonable_encoder(payload or {}),
         )
     )
     session.commit()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ from app.core.logic import MacroProfile, aggregate_macros, recipe_per_serving, s
 from app.core.models import FoodItem, MealEntry, MealEntryItem, MealTemplate, MealTemplateItem, PhotoAnalysisDraft, Recipe, RecipeItem, utcnow
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
+from app.core.pagination import ascending_cursor_filter, decode_cursor, descending_cursor_filter, encode_cursor, page_rows
 from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import Actor, require_scope
 from app.core.storage import ensure_managed_upload_path, save_upload
@@ -111,17 +112,31 @@ class PhotoConfirmRequest(BaseModel):
 def list_foods(
     actor: Actor = Depends(nutrition_read),
     session: Session = Depends(get_session),
-    search: str | None = Query(default=None),
+    search: str | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     query = (
         select(FoodItem)
         .where(FoodItem.user_id == actor.user_id, FoodItem.deleted_at.is_(None))
-        .order_by(FoodItem.name.asc())
+        .order_by(FoodItem.name.asc(), FoodItem.id.asc())
     )
     if search:
         query = query.where(or_(FoodItem.name.ilike(f"%{search}%"), FoodItem.brand.ilike(f"%{search}%")))
-    rows = session.scalars(query).all()
-    return {"items": [serialize_food(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
+    if cursor:
+        cursor_name, cursor_id = decode_cursor(cursor)
+        query = query.where(ascending_cursor_filter(FoodItem.name, FoodItem.id, cursor_name, cursor_id))
+    rows = session.scalars(query.limit(limit + 1)).all()
+    page, has_more = page_rows(rows, limit)
+    next_cursor = encode_cursor(page[-1].name, page[-1].id) if has_more and page else None
+    return {
+        "items": [serialize_food(row) for row in page],
+        "total": len(page),
+        "limit": limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "requested_by": actor.display_name,
+    }
 
 
 @router.post("/foods", status_code=status.HTTP_201_CREATED)
@@ -278,15 +293,17 @@ def delete_meal_template(template_id: str, actor: Actor = Depends(nutrition_writ
 def list_meals(
     actor: Actor = Depends(nutrition_read),
     session: Session = Depends(get_session),
-    date_from: datetime | None = Query(default=None),
-    date_to: datetime | None = Query(default=None),
-    meal_type: str | None = Query(default=None),
-    template_id: str | None = Query(default=None),
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    meal_type: str | None = None,
+    template_id: str | None = None,
+    limit: int = 25,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     query = (
         select(MealEntry)
         .where(MealEntry.user_id == actor.user_id, MealEntry.deleted_at.is_(None))
-        .order_by(MealEntry.logged_at.desc())
+        .order_by(MealEntry.logged_at.desc(), MealEntry.id.desc())
     )
     conditions = []
     if date_from:
@@ -297,10 +314,28 @@ def list_meals(
         conditions.append(MealEntry.meal_type == meal_type)
     if template_id:
         conditions.append(MealEntry.template_id == template_id)
+    if cursor:
+        cursor_value, cursor_id = decode_cursor(cursor)
+        conditions.append(
+            descending_cursor_filter(
+                MealEntry.logged_at,
+                MealEntry.id,
+                datetime.fromisoformat(cursor_value),
+                cursor_id,
+            )
+        )
     if conditions:
         query = query.where(and_(*conditions))
-    rows = session.scalars(query).all()
-    return {"items": [serialize_meal(session, row) for row in rows], "total": len(rows)}
+    rows = session.scalars(query.limit(limit + 1)).all()
+    page, has_more = page_rows(rows, limit)
+    next_cursor = encode_cursor(page[-1].logged_at, page[-1].id) if has_more and page else None
+    return {
+        "items": [serialize_meal(session, row) for row in page],
+        "total": len(page),
+        "limit": limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    }
 
 
 @router.post("/meals", status_code=status.HTTP_201_CREATED)
@@ -827,11 +862,17 @@ def serialize_photo_draft(row: PhotoAnalysisDraft) -> dict[str, Any]:
 
 
 def load_dashboard_cards(session: Session, actor: Actor) -> list[DashboardCardState]:
-    today = utcnow().date()
-    meals = session.scalars(
-        select(MealEntry).where(MealEntry.user_id == actor.user_id, MealEntry.deleted_at.is_(None))
+    now = utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = today_start + timedelta(days=1)
+    today_meals = session.scalars(
+        select(MealEntry).where(
+            MealEntry.user_id == actor.user_id,
+            MealEntry.deleted_at.is_(None),
+            MealEntry.logged_at >= today_start,
+            MealEntry.logged_at < tomorrow_start,
+        )
     ).all()
-    today_meals = [meal for meal in meals if meal.logged_at.date() == today]
     calories = sum(meal.total_calories for meal in today_meals)
     return [
         DashboardCardState(

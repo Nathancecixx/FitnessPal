@@ -20,14 +20,14 @@ function formatCoachBody(body: string | null | undefined) {
 
 export function DashboardPage() {
   const dashboardQuery = useQuery({ queryKey: ['dashboard'], queryFn: api.getDashboard })
-  const insightsQuery = useQuery({ queryKey: ['insights'], queryFn: api.getInsights })
+  const insightsQuery = useQuery({ queryKey: ['insights-summary'], queryFn: () => api.getInsightSummary(90) })
   const briefQuery = useQuery({ queryKey: ['assistant-brief'], queryFn: api.getAssistantBrief, retry: false })
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
   const [assistantNote, setAssistantNote] = useState('Weighed 82.4 kg this morning and ate lunch for 650 kcal with 45P 60C 20F')
   const [assistantResult, setAssistantResult] = useState<Awaited<ReturnType<typeof api.parseAssistantNote>> | null>(null)
 
   const cards = dashboardQuery.data?.cards ?? []
-  const insights = insightsQuery.data?.snapshot.payload
+  const insights = insightsQuery.data?.summary
   const brief = briefQuery.data?.brief
   const calorieSeries = Object.values(insights?.nutrition.daily_calories ?? {}).slice(-7)
   const weightSeries = insights?.body.trend_7 ?? []
@@ -43,6 +43,7 @@ export function DashboardPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
       ])
     },
@@ -98,6 +99,7 @@ export function DashboardPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
         queryClient.invalidateQueries({ queryKey: ['meals'] }),
         queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
         queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),

@@ -1,3 +1,16 @@
+import {
+  cacheApiResponse,
+  enqueueSyncRequest,
+  getSyncState,
+  listQueuedSyncRequests,
+  markSyncFlushComplete,
+  readCachedApiResponse,
+  removeQueuedSyncRequest,
+  setSyncFlushing,
+  type QueuedSyncRequest,
+} from './offline'
+import { queryClient } from './query-client'
+
 export type DashboardCard = {
   key: string
   title: string
@@ -9,6 +22,30 @@ export type DashboardCard = {
   detail?: string | null
   trend?: number | null
   status?: string
+}
+
+export type PagedListResponse<T> = {
+  items: T[]
+  total: number
+  limit?: number
+  has_more?: boolean
+  next_cursor?: string | null
+  requested_by?: string
+}
+
+export type CursorListParams = {
+  limit?: number
+  cursor?: string | null
+}
+
+export type DateRangeListParams = CursorListParams & {
+  date_from?: string
+  date_to?: string
+}
+
+export type SyncMeta = {
+  sync_status?: 'queued'
+  queued_at?: string | null
 }
 
 export type MacroTotals = {
@@ -124,6 +161,26 @@ export type Exercise = {
   load_increment: number
 }
 
+export type Routine = {
+  id: string
+  name: string
+  goal?: string | null
+  schedule_notes?: string | null
+  notes?: string | null
+  items: Array<{
+    id: string
+    exercise_id: string
+    exercise_name?: string | null
+    day_label: string
+    order_index: number
+    target_sets: number
+    target_reps_min: number
+    target_reps_max: number
+    target_rir?: number | null
+  }>
+  created_at: string
+}
+
 export type WorkoutSet = {
   id?: string
   exercise_id: string
@@ -214,6 +271,10 @@ export type InsightSnapshot = {
     recommendations: string[]
     generated_at: string
   }
+}
+
+export type InsightSummary = InsightSnapshot['payload'] & {
+  window_days?: number
 }
 
 export type Goal = {
@@ -464,6 +525,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const IMAGE_RESIZE_THRESHOLD_BYTES = 4 * 1024 * 1024
 const IMAGE_UPLOAD_MAX_EDGE = 2048
 const IMAGE_UPLOAD_QUALITY = 0.82
+let outboxProcessorInitialized = false
 
 async function readErrorMessage(response: Response): Promise<string> {
   const errorBody = await response.text()
@@ -543,26 +605,250 @@ async function prepareImageUpload(file: File): Promise<File> {
   }
 }
 
+function buildQueryString(params: Record<string, string | number | boolean | null | undefined>) {
+  const searchParams = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return
+    }
+    searchParams.set(key, String(value))
+  })
+  const queryString = searchParams.toString()
+  return queryString ? `?${queryString}` : ''
+}
+
+function buildCacheKey(path: string, method: string) {
+  return `${method.toUpperCase()}:${path}`
+}
+
+function isNetworkError(error: unknown) {
+  return error instanceof TypeError || (error instanceof Error && /fetch|network|offline/i.test(error.message))
+}
+
+function buildSyncId(prefix: string) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function buildIdempotencyKey(prefix: string) {
+  return `fitnesspal-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function updatePagedCache<T extends { id: string }>(queryKey: readonly unknown[], item: T) {
+  queryClient.setQueryData<PagedListResponse<T> | undefined>(queryKey, (current) => {
+    if (!current) {
+      return {
+        items: [item],
+        total: 1,
+        has_more: false,
+        next_cursor: null,
+      }
+    }
+
+    const items = [item, ...current.items.filter((entry) => entry.id !== item.id)]
+    return {
+      ...current,
+      items,
+      total: items.length,
+    }
+  })
+}
+
+function invalidateQueuedPath(path: string) {
+  if (path.startsWith('/meals')) {
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['meals'] }),
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      queryClient.invalidateQueries({ queryKey: ['insights'] }),
+      queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
+      queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
+    ])
+    return
+  }
+
+  if (path.startsWith('/workout-sessions')) {
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      queryClient.invalidateQueries({ queryKey: ['insights'] }),
+      queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
+      queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
+    ])
+    return
+  }
+
+  if (path.startsWith('/weight-entries')) {
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
+      queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      queryClient.invalidateQueries({ queryKey: ['insights'] }),
+      queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
+      queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
+    ])
+  }
+}
+
+function buildQueuedMealEntry(id: string, queuedAt: string, payload: Record<string, unknown>): MealEntry & SyncMeta {
+  const items = Array.isArray(payload.items) ? payload.items as MealEntryItem[] : []
+  const totals = items.reduce<MacroTotals>((current, item) => ({
+    calories: current.calories + Number(item.calories ?? 0),
+    protein_g: current.protein_g + Number(item.protein_g ?? 0),
+    carbs_g: current.carbs_g + Number(item.carbs_g ?? 0),
+    fat_g: current.fat_g + Number(item.fat_g ?? 0),
+    fiber_g: current.fiber_g + Number(item.fiber_g ?? 0),
+    sodium_mg: current.sodium_mg + Number(item.sodium_mg ?? 0),
+  }), {
+    calories: 0,
+    protein_g: 0,
+    carbs_g: 0,
+    fat_g: 0,
+    fiber_g: 0,
+    sodium_mg: 0,
+  })
+
+  return {
+    id,
+    logged_at: typeof payload.logged_at === 'string' ? payload.logged_at : queuedAt,
+    meal_type: typeof payload.meal_type === 'string' ? payload.meal_type : 'meal',
+    source: typeof payload.source === 'string' ? payload.source : 'manual',
+    notes: typeof payload.notes === 'string' ? payload.notes : null,
+    tags_json: Array.isArray(payload.tags_json) ? payload.tags_json as string[] : [],
+    totals,
+    ai_confidence: null,
+    items,
+    sync_status: 'queued',
+    queued_at: queuedAt,
+  }
+}
+
+function buildQueuedWorkoutSession(id: string, queuedAt: string, payload: Record<string, unknown>): WorkoutSession & SyncMeta {
+  const sets = Array.isArray(payload.sets) ? payload.sets as WorkoutSet[] : []
+  return {
+    id,
+    template_id: typeof payload.template_id === 'string' ? payload.template_id : null,
+    routine_id: typeof payload.routine_id === 'string' ? payload.routine_id : null,
+    started_at: typeof payload.started_at === 'string' ? payload.started_at : queuedAt,
+    ended_at: typeof payload.ended_at === 'string' ? payload.ended_at : null,
+    notes: typeof payload.notes === 'string' ? payload.notes : null,
+    perceived_energy: typeof payload.perceived_energy === 'number' ? payload.perceived_energy : null,
+    bodyweight_kg: typeof payload.bodyweight_kg === 'number' ? payload.bodyweight_kg : null,
+    total_volume_kg: sets.reduce((sum, set) => sum + (Number(set.load_kg ?? 0) * Number(set.reps ?? 0)), 0),
+    total_sets: sets.length,
+    sets,
+    sync_status: 'queued',
+    queued_at: queuedAt,
+  }
+}
+
+function buildQueuedWeightEntry(id: string, queuedAt: string, payload: Record<string, unknown>): WeightEntry & SyncMeta {
+  return {
+    id,
+    logged_at: typeof payload.logged_at === 'string' ? payload.logged_at : queuedAt,
+    weight_kg: Number(payload.weight_kg ?? 0),
+    body_fat_pct: payload.body_fat_pct == null ? null : Number(payload.body_fat_pct),
+    waist_cm: payload.waist_cm == null ? null : Number(payload.waist_cm),
+    notes: typeof payload.notes === 'string' ? payload.notes : null,
+    sync_status: 'queued',
+    queued_at: queuedAt,
+  }
+}
+
+async function performQueuedRequest(request: QueuedSyncRequest) {
+  const response = await fetch(`${API_BASE}${request.path}`, {
+    method: request.method,
+    credentials: 'include',
+    headers: request.headers,
+    body: request.body,
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+}
+
+export async function flushQueuedWrites() {
+  if (typeof window === 'undefined' || !window.navigator.onLine || getSyncState().queuedCount === 0 || getSyncState().isFlushing) {
+    return
+  }
+
+  setSyncFlushing(true)
+  try {
+    for (const queuedRequest of listQueuedSyncRequests()) {
+      try {
+        await performQueuedRequest(queuedRequest)
+        removeQueuedSyncRequest(queuedRequest.id)
+        invalidateQueuedPath(queuedRequest.path)
+      } catch (error) {
+        if (isNetworkError(error)) {
+          break
+        }
+        throw error
+      }
+    }
+    markSyncFlushComplete(new Date().toISOString())
+  } finally {
+    setSyncFlushing(false)
+  }
+}
+
+function ensureOutboxProcessor() {
+  if (outboxProcessorInitialized || typeof window === 'undefined') {
+    return
+  }
+
+  outboxProcessorInitialized = true
+  window.addEventListener('online', () => {
+    void flushQueuedWrites()
+  })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && window.navigator.onLine) {
+      void flushQueuedWrites()
+    }
+  })
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? {})
   if (init?.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    credentials: 'include',
-    ...init,
-    headers,
-  })
+  const method = init?.method?.toUpperCase() ?? 'GET'
+  const cacheKey = buildCacheKey(path, method)
+  let response: Response
+
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      credentials: 'include',
+      ...init,
+      headers,
+    })
+  } catch (error) {
+    if (method === 'GET') {
+      const cached = readCachedApiResponse<T>(cacheKey)
+      if (cached !== null) {
+        return cached
+      }
+    }
+    throw error
+  }
 
   if (!response.ok) {
     throw new Error(await readErrorMessage(response))
   }
 
-  return response.json() as Promise<T>
+  const payload = await response.json() as T
+  if (method === 'GET') {
+    cacheApiResponse(cacheKey, payload)
+  }
+  return payload
 }
 
 async function upload<T>(path: string, formData: FormData): Promise<T> {
+  if (typeof window !== 'undefined' && !window.navigator.onLine) {
+    throw new Error('Uploads require a connection. Please retry when you are back online.')
+  }
+
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     credentials: 'include',
@@ -575,6 +861,45 @@ async function upload<T>(path: string, formData: FormData): Promise<T> {
 
   return response.json() as Promise<T>
 }
+
+async function queueableCreate<T extends { id: string }>(
+  path: string,
+  payload: Record<string, unknown>,
+  buildPlaceholder: (id: string, queuedAt: string, payload: Record<string, unknown>) => T,
+  queryKey: readonly unknown[],
+) {
+  const idempotencyKey = buildIdempotencyKey(path.replaceAll('/', '-'))
+  try {
+    return await request<T>(path, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    })
+  } catch (error) {
+    if (typeof window === 'undefined' || (window.navigator.onLine && !isNetworkError(error))) {
+      throw error
+    }
+
+    const queuedAt = new Date().toISOString()
+    const queuedId = buildSyncId(path.replaceAll('/', '').replaceAll('-', '') || 'queued')
+    enqueueSyncRequest({
+      id: queuedId,
+      method: 'POST',
+      path,
+      body: JSON.stringify(payload),
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      created_at: queuedAt,
+    })
+    const placeholder = buildPlaceholder(queuedId, queuedAt, payload)
+    updatePagedCache(queryKey, placeholder)
+    return placeholder
+  }
+}
+
+ensureOutboxProcessor()
 
 export const api = {
   login: (username: string, password: string) => request<AuthResponse>('/auth/login', {
@@ -593,7 +918,7 @@ export const api = {
   getSession: () => request<SessionInfo>('/auth/session'),
   getDashboard: () => request<{ cards: DashboardCard[]; available_modules: string[] }>('/dashboard'),
   getRuntime: () => request<RuntimeInfo>('/runtime'),
-  listJobs: (status?: string) => request<{ items: JobRecord[]; total: number }>(`/jobs${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  listJobs: (params: { status?: string; limit?: number; cursor?: string | null } = {}) => request<PagedListResponse<JobRecord>>(`/jobs${buildQueryString(params)}`),
   listAiProfiles: () => request<{ items: AiProfile[]; features: string[] }>('/ai/profiles'),
   createAiProfile: (payload: Record<string, unknown>) => request<AiProfile>('/ai/profiles', { method: 'POST', body: JSON.stringify(payload) }),
   getAiProfile: (profileId: string) => request<{ profile: AiProfile }>(`/ai/profiles/${profileId}`),
@@ -605,7 +930,10 @@ export const api = {
   updateAiFeatures: (items: Record<string, unknown>[]) => request<{ items: AiFeatureBinding[] }>('/ai/features', { method: 'PUT', body: JSON.stringify({ items }) }),
   getAiPersona: () => request<{ persona: AiPersonaConfig }>('/ai/persona'),
   updateAiPersona: (payload: Record<string, unknown>) => request<{ persona: AiPersonaConfig }>('/ai/persona', { method: 'PUT', body: JSON.stringify(payload) }),
-  listFoods: (search?: string) => request<{ items: FoodItem[]; total: number }>(`/foods${search ? `?search=${encodeURIComponent(search)}` : ''}`),
+  listFoods: (params?: string | ({ search?: string } & CursorListParams)) => {
+    const normalized = typeof params === 'string' ? { search: params } : (params ?? {})
+    return request<PagedListResponse<FoodItem>>(`/foods${buildQueryString(normalized)}`)
+  },
   createFood: (payload: Partial<FoodItem> & { name: string }) => request<FoodItem>('/foods', { method: 'POST', body: JSON.stringify(payload) }),
   lookupBarcode: (barcode: string) => request<FoodImportDraft>(`/foods/barcode-lookup/${encodeURIComponent(barcode)}`),
   scanFoodLabel: async (file: File) => {
@@ -615,8 +943,8 @@ export const api = {
   },
   listRecipes: () => request<{ items: Recipe[]; total: number }>('/recipes'),
   createRecipe: (payload: Record<string, unknown>) => request<Recipe>('/recipes', { method: 'POST', body: JSON.stringify(payload) }),
-  listMeals: () => request<{ items: MealEntry[]; total: number }>('/meals'),
-  createMeal: (payload: Record<string, unknown>) => request<MealEntry>('/meals', { method: 'POST', body: JSON.stringify(payload) }),
+  listMeals: (params: DateRangeListParams & { meal_type?: string; template_id?: string } = {}) => request<PagedListResponse<MealEntry>>(`/meals${buildQueryString(params)}`),
+  createMeal: (payload: Record<string, unknown>) => queueableCreate<MealEntry & SyncMeta>('/meals', payload, buildQueuedMealEntry, ['meals']),
   updateMeal: (mealId: string, payload: Record<string, unknown>) => request<MealEntry>(`/meals/${mealId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteMeal: (mealId: string) => request<{ status: string; id: string }>(`/meals/${mealId}`, { method: 'DELETE' }),
   listMealTemplates: () => request<{ items: MealTemplate[]; total: number }>('/meal-templates'),
@@ -634,20 +962,25 @@ export const api = {
   listExercises: () => request<{ items: Exercise[]; total: number }>('/exercises'),
   createExercise: (payload: Record<string, unknown>) => request<Exercise>('/exercises', { method: 'POST', body: JSON.stringify(payload) }),
   getExerciseProgression: (exerciseId: string) => request<{ recommendation: { recommendation: string; next_load_kg: number; reason: string } }>(`/exercises/${exerciseId}/progression`),
+  listRoutines: () => request<{ items: Routine[]; total: number }>('/routines'),
+  createRoutine: (payload: Record<string, unknown>) => request<Routine>('/routines', { method: 'POST', body: JSON.stringify(payload) }),
+  updateRoutine: (routineId: string, payload: Record<string, unknown>) => request<Routine>(`/routines/${routineId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteRoutine: (routineId: string) => request<{ status: string; id: string }>(`/routines/${routineId}`, { method: 'DELETE' }),
   listWorkoutTemplates: () => request<{ items: WorkoutTemplate[]; total: number }>('/workout-templates'),
   createWorkoutTemplate: (payload: Record<string, unknown>) => request<WorkoutTemplate>('/workout-templates', { method: 'POST', body: JSON.stringify(payload) }),
   updateWorkoutTemplate: (templateId: string, payload: Record<string, unknown>) => request<WorkoutTemplate>(`/workout-templates/${templateId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteWorkoutTemplate: (templateId: string) => request<{ status: string; id: string }>(`/workout-templates/${templateId}`, { method: 'DELETE' }),
-  listWorkoutSessions: () => request<{ items: WorkoutSession[]; total: number }>('/workout-sessions'),
-  createWorkoutSession: (payload: Record<string, unknown>) => request<WorkoutSession>('/workout-sessions', { method: 'POST', body: JSON.stringify(payload) }),
+  listWorkoutSessions: (params: DateRangeListParams & { template_id?: string } = {}) => request<PagedListResponse<WorkoutSession>>(`/workout-sessions${buildQueryString(params)}`),
+  createWorkoutSession: (payload: Record<string, unknown>) => queueableCreate<WorkoutSession & SyncMeta>('/workout-sessions', payload, buildQueuedWorkoutSession, ['workout-sessions']),
   updateWorkoutSession: (sessionId: string, payload: Record<string, unknown>) => request<WorkoutSession>(`/workout-sessions/${sessionId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteWorkoutSession: (sessionId: string) => request<{ status: string; id: string }>(`/workout-sessions/${sessionId}`, { method: 'DELETE' }),
-  listWeightEntries: () => request<{ items: WeightEntry[]; total: number }>('/weight-entries'),
-  getWeightTrends: () => request<{ points: WeightTrendPoint[]; weight_trend_kg_per_week: number }>('/weight-entries/trends'),
-  createWeightEntry: (payload: Record<string, unknown>) => request<WeightEntry>('/weight-entries', { method: 'POST', body: JSON.stringify(payload) }),
+  listWeightEntries: (params: DateRangeListParams = {}) => request<PagedListResponse<WeightEntry>>(`/weight-entries${buildQueryString(params)}`),
+  getWeightTrends: (days = 180) => request<{ points: WeightTrendPoint[]; weight_trend_kg_per_week: number }>(`/weight-entries/trends${buildQueryString({ days })}`),
+  createWeightEntry: (payload: Record<string, unknown>) => queueableCreate<WeightEntry & SyncMeta>('/weight-entries', payload, buildQueuedWeightEntry, ['weight-entries']),
   updateWeightEntry: (entryId: string, payload: Record<string, unknown>) => request<WeightEntry>(`/weight-entries/${entryId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteWeightEntry: (entryId: string) => request<{ status: string; id: string }>(`/weight-entries/${entryId}`, { method: 'DELETE' }),
   getInsights: () => request<{ snapshot: InsightSnapshot }>('/insights'),
+  getInsightSummary: (days = 90) => request<{ summary: InsightSummary }>('/insights/summary' + buildQueryString({ days })),
   recomputeInsights: () => request<{ snapshot: InsightSnapshot }>('/insights/recompute', { method: 'POST' }),
   listGoals: () => request<{ items: Goal[]; total: number }>('/goals'),
   createGoal: (payload: Record<string, unknown>) => request<Goal>('/goals', { method: 'POST', body: JSON.stringify(payload) }),
@@ -658,7 +991,7 @@ export const api = {
   listUsers: () => request<{ items: ManagedUser[]; total: number }>('/users'),
   createUser: (payload: { username: string; is_admin?: boolean }) => request<UserSetupResponse>('/users', { method: 'POST', body: JSON.stringify(payload) }),
   issuePasswordSetup: (userId: string) => request<UserSetupResponse>(`/users/${userId}/password-setup`, { method: 'POST' }),
-  listExports: () => request<{ items: ExportRecord[]; total: number }>('/exports'),
+  listExports: (params: CursorListParams = {}) => request<PagedListResponse<ExportRecord>>(`/exports${buildQueryString(params)}`),
   createExport: () => request<ExportRecord>('/exports', { method: 'POST' }),
   restoreExport: (payload: Record<string, unknown>) => request<{ status: string; counts: Record<string, number> }>('/exports/restore', {
     method: 'POST',

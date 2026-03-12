@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, status
@@ -16,6 +16,7 @@ from app.core.logic import rolling_average, weight_trend_per_week
 from app.core.models import WeightEntry, utcnow
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
+from app.core.pagination import decode_cursor, descending_cursor_filter, encode_cursor, page_rows
 from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import Actor, require_scope
 
@@ -38,13 +39,44 @@ class WeightEntryUpdate(WeightEntryCreate):
 
 
 @router.get("/weight-entries")
-def list_weight_entries(actor: Actor = Depends(metrics_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(
+def list_weight_entries(
+    actor: Actor = Depends(metrics_read),
+    session: Session = Depends(get_session),
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 30,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    query = (
         select(WeightEntry)
         .where(WeightEntry.user_id == actor.user_id, WeightEntry.deleted_at.is_(None))
-        .order_by(WeightEntry.logged_at.desc())
-    ).all()
-    return {"items": [serialize_weight_entry(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
+        .order_by(WeightEntry.logged_at.desc(), WeightEntry.id.desc())
+    )
+    if date_from:
+        query = query.where(WeightEntry.logged_at >= date_from)
+    if date_to:
+        query = query.where(WeightEntry.logged_at <= date_to)
+    if cursor:
+        cursor_value, cursor_id = decode_cursor(cursor)
+        query = query.where(
+            descending_cursor_filter(
+                WeightEntry.logged_at,
+                WeightEntry.id,
+                datetime.fromisoformat(cursor_value),
+                cursor_id,
+            )
+        )
+    rows = session.scalars(query.limit(limit + 1)).all()
+    page, has_more = page_rows(rows, limit)
+    next_cursor = encode_cursor(page[-1].logged_at, page[-1].id) if has_more and page else None
+    return {
+        "items": [serialize_weight_entry(row) for row in page],
+        "total": len(page),
+        "limit": limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "requested_by": actor.display_name,
+    }
 
 
 @router.post("/weight-entries", status_code=status.HTTP_201_CREATED)
@@ -76,10 +108,19 @@ def create_weight_entry(
 
 
 @router.get("/weight-entries/trends")
-def get_weight_trends(actor: Actor = Depends(metrics_read), session: Session = Depends(get_session)) -> dict[str, Any]:
+def get_weight_trends(
+    actor: Actor = Depends(metrics_read),
+    session: Session = Depends(get_session),
+    days: int = 180,
+) -> dict[str, Any]:
+    cutoff = utcnow() - timedelta(days=days)
     rows = session.scalars(
         select(WeightEntry)
-        .where(WeightEntry.user_id == actor.user_id, WeightEntry.deleted_at.is_(None))
+        .where(
+            WeightEntry.user_id == actor.user_id,
+            WeightEntry.deleted_at.is_(None),
+            WeightEntry.logged_at >= cutoff,
+        )
         .order_by(WeightEntry.logged_at.asc())
     ).all()
     weights = [row.weight_kg for row in rows]
@@ -152,11 +193,12 @@ def serialize_weight_entry(row: WeightEntry) -> dict[str, Any]:
 
 
 def load_dashboard_cards(session: Session, actor: Actor) -> list[DashboardCardState]:
-    rows = session.scalars(
+    rows = list(reversed(session.scalars(
         select(WeightEntry)
         .where(WeightEntry.user_id == actor.user_id, WeightEntry.deleted_at.is_(None))
-        .order_by(WeightEntry.logged_at.asc())
-    ).all()
+        .order_by(WeightEntry.logged_at.desc())
+        .limit(60)
+    ).all()))
     if not rows:
         return [
             DashboardCardState(

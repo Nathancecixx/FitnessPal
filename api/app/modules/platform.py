@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -18,6 +19,7 @@ from app.core.idempotency import IdempotentRoute
 from app.core.local_ai import inspect_ai_runtime, parse_natural_language_entry
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
+from app.core.pagination import decode_cursor, descending_cursor_filter, encode_cursor, page_rows
 from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import (
     Actor,
@@ -392,17 +394,32 @@ def list_jobs(
     session: Session = Depends(get_session),
     status: str | None = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
+    cursor: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    query = select(JobRecord).where(JobRecord.user_id == actor.user_id).order_by(JobRecord.created_at.desc()).limit(limit)
+    query = select(JobRecord).where(JobRecord.user_id == actor.user_id).order_by(JobRecord.created_at.desc(), JobRecord.id.desc())
     if status:
-        query = (
-            select(JobRecord)
-            .where(JobRecord.user_id == actor.user_id, JobRecord.status == status)
-            .order_by(JobRecord.created_at.desc())
-            .limit(limit)
+        query = query.where(JobRecord.status == status)
+    if cursor:
+        cursor_value, cursor_id = decode_cursor(cursor)
+        query = query.where(
+            descending_cursor_filter(
+                JobRecord.created_at,
+                JobRecord.id,
+                datetime.fromisoformat(cursor_value),
+                cursor_id,
+            )
         )
-    rows = session.scalars(query).all()
-    return {"items": [serialize_job(row) for row in rows], "total": len(rows), "requested_by": actor.display_name}
+    rows = session.scalars(query.limit(limit + 1)).all()
+    page, has_more = page_rows(rows, limit)
+    next_cursor = encode_cursor(page[-1].created_at, page[-1].id) if has_more and page else None
+    return {
+        "items": [serialize_job(row) for row in page],
+        "total": len(page),
+        "limit": limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "requested_by": actor.display_name,
+    }
 
 
 @router.get("/goals")
@@ -491,11 +508,33 @@ def revoke_api_key(key_id: str, actor: Actor = Depends(platform_write), session:
 
 
 @router.get("/exports")
-def list_exports(actor: Actor = Depends(platform_read), session: Session = Depends(get_session)) -> dict[str, Any]:
-    rows = session.scalars(
-        select(ExportRecord).where(ExportRecord.user_id == actor.user_id).order_by(ExportRecord.created_at.desc())
-    ).all()
-    return {"items": [serialize_export(row) for row in rows], "total": len(rows)}
+def list_exports(
+    actor: Actor = Depends(platform_read),
+    session: Session = Depends(get_session),
+    limit: int = Query(default=25, ge=1, le=200),
+    cursor: str | None = Query(default=None),
+) -> dict[str, Any]:
+    query = select(ExportRecord).where(ExportRecord.user_id == actor.user_id).order_by(ExportRecord.created_at.desc(), ExportRecord.id.desc())
+    if cursor:
+        cursor_value, cursor_id = decode_cursor(cursor)
+        query = query.where(
+            descending_cursor_filter(
+                ExportRecord.created_at,
+                ExportRecord.id,
+                datetime.fromisoformat(cursor_value),
+                cursor_id,
+            )
+        )
+    rows = session.scalars(query.limit(limit + 1)).all()
+    page, has_more = page_rows(rows, limit)
+    next_cursor = encode_cursor(page[-1].created_at, page[-1].id) if has_more and page else None
+    return {
+        "items": [serialize_export(row) for row in page],
+        "total": len(page),
+        "limit": limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    }
 
 
 @router.post("/exports", status_code=status.HTTP_201_CREATED)

@@ -15,8 +15,9 @@ function describeWeeklyTrend(value: number) {
 }
 
 export function WeightPage() {
-  const entriesQuery = useQuery({ queryKey: ['weight-entries'], queryFn: api.listWeightEntries })
-  const trendsQuery = useQuery({ queryKey: ['weight-trends'], queryFn: api.getWeightTrends })
+  const [entryLimit, setEntryLimit] = useState(10)
+  const entriesQuery = useQuery({ queryKey: ['weight-entries', entryLimit], queryFn: () => api.listWeightEntries({ limit: entryLimit }) })
+  const trendsQuery = useQuery({ queryKey: ['weight-trends'], queryFn: () => api.getWeightTrends(180) })
   const [draft, setDraft] = useState({
     weight_kg: '',
     body_fat_pct: '',
@@ -45,6 +46,7 @@ export function WeightPage() {
         queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -61,6 +63,7 @@ export function WeightPage() {
         queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -163,7 +166,7 @@ export function WeightPage() {
 
           <Panel title="Recent check-ins" subtitle="The last few entries stay close so the habit feels grounded in actual history.">
             <div className="space-y-3">
-              {entries.slice(0, 6).map((entry) => (
+              {entries.map((entry) => (
                 <div key={entry.id} className="rounded-[22px] border border-slate-200 bg-white p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -171,7 +174,9 @@ export function WeightPage() {
                       <div className="mt-2 font-display text-3xl text-slate-950">{entry.weight_kg} kg</div>
                     </div>
                     <div className="rounded-full bg-slate-100 px-3 py-2 text-sm text-slate-700">
-                      {entry.body_fat_pct != null ? `${entry.body_fat_pct}% BF` : 'Scale only'}
+                      {'sync_status' in entry && entry.sync_status === 'queued'
+                        ? 'Queued sync'
+                        : entry.body_fat_pct != null ? `${entry.body_fat_pct}% BF` : 'Scale only'}
                     </div>
                   </div>
                   {entry.waist_cm != null ? <div className="mt-3 text-sm text-slate-500">Waist: {entry.waist_cm} cm</div> : null}
@@ -197,6 +202,11 @@ export function WeightPage() {
                 </div>
               ))}
               {!entries.length ? <EmptyState title="No weigh-ins yet" body="Log the first morning weight and the trend cards will start to become useful almost immediately." /> : null}
+              {entriesQuery.data?.has_more ? (
+                <ActionButton tone="secondary" onClick={() => setEntryLimit((current) => current + 10)} className="w-full sm:w-auto">
+                  Load more check-ins
+                </ActionButton>
+              ) : null}
             </div>
           </Panel>
         </div>

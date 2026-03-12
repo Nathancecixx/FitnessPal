@@ -2,7 +2,8 @@ import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
-import { api } from '../../lib/api'
+import { api, flushQueuedWrites } from '../../lib/api'
+import { getSyncState, setSyncNamespace, subscribeSyncState } from '../../lib/offline'
 import { queryClient } from '../../lib/query-client'
 
 const navItems = [
@@ -114,6 +115,7 @@ function MobileNav({ pathname }: { pathname: string }) {
 
 export function AppShell() {
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme)
+  const [syncState, setSyncState] = useState(getSyncState)
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession, retry: false })
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const currentItem = useMemo(() => navItems.find((item) => item.to === pathname) ?? navItems[0], [pathname])
@@ -133,6 +135,16 @@ export function AppShell() {
     root.style.colorScheme = theme
     window.localStorage.setItem(THEME_STORAGE_KEY, theme)
   }, [theme])
+
+  useEffect(() => {
+    const unsubscribe = subscribeSyncState(setSyncState)
+    void flushQueuedWrites()
+    return unsubscribe
+  }, [])
+
+  useEffect(() => {
+    setSyncNamespace(sessionUser?.id ?? null)
+  }, [sessionUser?.id])
 
   if (sessionQuery.isLoading) {
     return <div className="flex min-h-screen items-center justify-center font-display text-3xl text-slate-700">Booting FitnessPal...</div>
@@ -192,6 +204,10 @@ export function AppShell() {
                   <div className="text-[11px] uppercase tracking-[0.24em] text-slate-400">FitnessPal</div>
                   <div className="mt-1 font-display text-3xl leading-none text-slate-950">{currentItem.label}</div>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{currentItem.hint}</p>
+                  <div className="mt-3 inline-flex rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600">
+                    {syncState.isOnline ? 'Online' : 'Offline'}
+                    {syncState.queuedCount ? ` · ${syncState.queuedCount} queued` : ''}
+                  </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <div className="hidden rounded-[22px] bg-slate-100 px-4 py-3 text-right text-xs text-slate-500 md:block">

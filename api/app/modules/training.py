@@ -16,6 +16,7 @@ from app.core.logic import ProgressionContext, SetPerformance, recommend_progres
 from app.core.models import Exercise, InsightSnapshot, Routine, RoutineExercise, SetEntry, WorkoutSession, WorkoutTemplate, WorkoutTemplateExercise, utcnow
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
+from app.core.pagination import decode_cursor, descending_cursor_filter, encode_cursor, page_rows
 from app.core.schemas import DashboardCardDefinition, DashboardCardState
 from app.core.security import Actor, require_scope
 
@@ -54,6 +55,10 @@ class RoutineCreate(BaseModel):
     schedule_notes: str | None = None
     notes: str | None = None
     items: list[RoutineExerciseInput] = Field(default_factory=list)
+
+
+class RoutineUpdate(RoutineCreate):
+    pass
 
 
 class WorkoutTemplateExerciseInput(BaseModel):
@@ -196,6 +201,51 @@ def create_routine(
     return serialize_routine(session, row)
 
 
+@router.get("/routines/{routine_id}")
+def get_routine(routine_id: str, actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
+    row = ensure_owned(session, Routine, routine_id, actor.user_id, "Routine not found.")
+    return serialize_routine(session, row)
+
+
+@router.patch("/routines/{routine_id}")
+def update_routine(
+    routine_id: str,
+    payload: RoutineUpdate,
+    actor: Actor = Depends(training_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = ensure_owned(session, Routine, routine_id, actor.user_id, "Routine not found.")
+    row.name = payload.name
+    row.goal = payload.goal
+    row.schedule_notes = payload.schedule_notes
+    row.notes = payload.notes
+    try:
+        existing_items = session.scalars(
+            select(RoutineExercise).where(RoutineExercise.user_id == actor.user_id, RoutineExercise.routine_id == row.id)
+        ).all()
+        for existing in existing_items:
+            session.delete(existing)
+        session.flush()
+        for item in payload.items:
+            ensure_owned(session, Exercise, item.exercise_id, actor.user_id, f"Exercise {item.exercise_id} not found.")
+            session.add(RoutineExercise(user_id=actor.user_id, routine_id=row.id, **item.model_dump()))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    write_audit(session, actor, "routine.updated", "routine", row.id, payload.model_dump())
+    return serialize_routine(session, row)
+
+
+@router.delete("/routines/{routine_id}")
+def delete_routine(routine_id: str, actor: Actor = Depends(training_write), session: Session = Depends(get_session)) -> dict[str, Any]:
+    row = ensure_owned(session, Routine, routine_id, actor.user_id, "Routine not found.")
+    row.deleted_at = utcnow()
+    session.commit()
+    write_audit(session, actor, "routine.deleted", "routine", row.id, {"name": row.name})
+    return {"status": "deleted", "id": row.id}
+
+
 @router.get("/workout-templates")
 def list_workout_templates(actor: Actor = Depends(training_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     rows = session.scalars(
@@ -262,11 +312,13 @@ def list_workout_sessions(
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
     template_id: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=200),
+    cursor: str | None = Query(default=None),
 ) -> dict[str, Any]:
     query = (
         select(WorkoutSession)
         .where(WorkoutSession.user_id == actor.user_id, WorkoutSession.deleted_at.is_(None))
-        .order_by(WorkoutSession.started_at.desc())
+        .order_by(WorkoutSession.started_at.desc(), WorkoutSession.id.desc())
     )
     conditions = []
     if date_from:
@@ -275,10 +327,28 @@ def list_workout_sessions(
         conditions.append(WorkoutSession.started_at <= date_to)
     if template_id:
         conditions.append(WorkoutSession.template_id == template_id)
+    if cursor:
+        cursor_value, cursor_id = decode_cursor(cursor)
+        conditions.append(
+            descending_cursor_filter(
+                WorkoutSession.started_at,
+                WorkoutSession.id,
+                datetime.fromisoformat(cursor_value),
+                cursor_id,
+            )
+        )
     if conditions:
         query = query.where(and_(*conditions))
-    rows = session.scalars(query).all()
-    return {"items": [serialize_workout_session(session, row) for row in rows], "total": len(rows)}
+    rows = session.scalars(query.limit(limit + 1)).all()
+    page, has_more = page_rows(rows, limit)
+    next_cursor = encode_cursor(page[-1].started_at, page[-1].id) if has_more and page else None
+    return {
+        "items": [serialize_workout_session(session, row) for row in page],
+        "total": len(page),
+        "limit": limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    }
 
 
 @router.post("/workout-sessions", status_code=status.HTTP_201_CREATED)

@@ -2,7 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { ActionButton, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
-import { api, type MealTemplate, type WorkoutTemplate } from '../../lib/api'
+import { api, type MealTemplate, type Routine, type WorkoutTemplate } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
 
 type MealTemplateItemDraft = {
@@ -32,6 +32,7 @@ type WorkoutTemplateItemDraft = {
 
 type WorkoutTemplateDraft = {
   name: string
+  routine_id: string
   notes: string
   items: WorkoutTemplateItemDraft[]
 }
@@ -56,6 +57,7 @@ function createEmptyMealTemplateDraft(): MealTemplateDraft {
 function createEmptyWorkoutTemplateDraft(): WorkoutTemplateDraft {
   return {
     name: '',
+    routine_id: '',
     notes: '',
     items: [createEmptyWorkoutTemplateItem()],
   }
@@ -83,6 +85,7 @@ function toMealTemplateDraft(template: MealTemplate): MealTemplateDraft {
 function toWorkoutTemplateDraft(template: WorkoutTemplate): WorkoutTemplateDraft {
   return {
     name: template.name,
+    routine_id: template.routine_id ?? '',
     notes: template.notes ?? '',
     items: template.items.length
       ? template.items.map((item) => ({
@@ -119,6 +122,7 @@ function toMealTemplatePayload(draft: MealTemplateDraft) {
 function toWorkoutTemplatePayload(draft: WorkoutTemplateDraft) {
   return {
     name: draft.name,
+    routine_id: draft.routine_id || null,
     notes: draft.notes,
     items: draft.items
       .filter((item) => item.exercise_id)
@@ -243,6 +247,7 @@ function MealTemplateForm(props: {
 function WorkoutTemplateForm(props: {
   draft: WorkoutTemplateDraft
   exercises: Array<{ id: string; name: string }>
+  routines: Routine[]
   submitLabel: string
   isSubmitting: boolean
   onChange: (draft: WorkoutTemplateDraft) => void
@@ -274,6 +279,15 @@ function WorkoutTemplateForm(props: {
       }}
     >
       <LabelledInput label="Template name" value={props.draft.name} onChange={(value) => updateDraft({ name: value })} placeholder="Push day" />
+      <LabelledSelect
+        label="Attach to routine"
+        value={props.draft.routine_id}
+        onChange={(value) => updateDraft({ routine_id: value })}
+        options={[
+          { label: 'Standalone template', value: '' },
+          ...props.routines.map((routine) => ({ label: routine.name, value: routine.id })),
+        ]}
+      />
       <LabelledTextArea label="Notes" value={props.draft.notes} onChange={(value) => updateDraft({ notes: value })} rows={3} placeholder="Optional session notes or cues" />
 
       {props.draft.items.map((item, index) => (
@@ -327,6 +341,7 @@ function WorkoutTemplateForm(props: {
 export function TemplatesPage() {
   const foodsQuery = useQuery({ queryKey: ['foods'], queryFn: () => api.listFoods() })
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
+  const routinesQuery = useQuery({ queryKey: ['routines'], queryFn: api.listRoutines })
   const mealTemplatesQuery = useQuery({ queryKey: ['meal-templates'], queryFn: api.listMealTemplates })
   const workoutTemplatesQuery = useQuery({ queryKey: ['workout-templates'], queryFn: api.listWorkoutTemplates })
 
@@ -411,6 +426,8 @@ export function TemplatesPage() {
 
   const foods = foodsQuery.data?.items ?? []
   const exercises = exercisesQuery.data?.items ?? []
+  const routines = routinesQuery.data?.items ?? []
+  const routineNameById = Object.fromEntries(routines.map((routine) => [routine.id, routine.name]))
 
   function startEditingMealTemplate(template: MealTemplate) {
     setMealTemplateEditors((state) => ({ ...state, [template.id]: toMealTemplateDraft(template) }))
@@ -506,7 +523,9 @@ export function TemplatesPage() {
                 return (
                   <div key={template.id} className="rounded-[24px] border border-slate-200 bg-white p-4">
                     <div className="font-display text-xl text-slate-950">{template.name}</div>
-                    <div className="mt-2 text-sm text-slate-500">{template.items.length} lift slots</div>
+                    <div className="mt-2 text-sm text-slate-500">
+                      {template.items.length} lift slots{template.routine_id ? ` / ${routineNameById[template.routine_id] ?? 'Routine linked'}` : ''}
+                    </div>
                     {template.notes ? <div className="mt-2 text-sm text-slate-500">{template.notes}</div> : null}
                     <div className="mt-4 flex flex-wrap gap-2">
                       <ActionButton tone="secondary" onClick={() => startEditingWorkoutTemplate(template)} className="w-auto">
@@ -530,6 +549,7 @@ export function TemplatesPage() {
                         <WorkoutTemplateForm
                           draft={editor}
                           exercises={exercises}
+                          routines={routines}
                           submitLabel="Save changes"
                           isSubmitting={updateWorkoutTemplate.isPending}
                           onChange={(draft) => setWorkoutTemplateEditors((state) => ({ ...state, [template.id]: draft }))}
@@ -554,6 +574,7 @@ export function TemplatesPage() {
               <WorkoutTemplateForm
                 draft={workoutTemplateDraft}
                 exercises={exercises}
+                routines={routines}
                 submitLabel="Save workout template"
                 isSubmitting={createWorkoutTemplate.isPending}
                 onChange={setWorkoutTemplateDraft}

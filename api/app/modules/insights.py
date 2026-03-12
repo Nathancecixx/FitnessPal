@@ -24,6 +24,10 @@ router = APIRouter(route_class=IdempotentRoute, tags=["insights"])
 insights_read = require_scope("insights:read")
 insights_write = require_scope("insights:write")
 
+INSIGHT_NUTRITION_LOOKBACK_DAYS = 90
+INSIGHT_WEIGHT_LOOKBACK_DAYS = 180
+INSIGHT_WORKOUT_LOOKBACK_DAYS = 14
+
 
 @router.get("/insights")
 def get_insights(actor: Actor = Depends(insights_read), session: Session = Depends(get_session)) -> dict[str, Any]:
@@ -37,6 +41,18 @@ def get_insights(actor: Actor = Depends(insights_read), session: Session = Depen
     return {"snapshot": serialize_snapshot(snapshot), "requested_by": actor.display_name}
 
 
+@router.get("/insights/summary")
+def get_insight_summary(
+    actor: Actor = Depends(insights_read),
+    session: Session = Depends(get_session),
+    days: int = 90,
+) -> dict[str, Any]:
+    return {
+        "summary": build_insight_summary(session, actor.user_id, window_days=days),
+        "requested_by": actor.display_name,
+    }
+
+
 @router.post("/insights/recompute", status_code=status.HTTP_201_CREATED)
 def recompute_insights(actor: Actor = Depends(insights_write), session: Session = Depends(get_session)) -> dict[str, Any]:
     payload = compute_insight_payload(session, actor.user_id)
@@ -47,18 +63,40 @@ def recompute_insights(actor: Actor = Depends(insights_write), session: Session 
 
 
 def compute_insight_payload(session: Session, user_id: str) -> dict[str, Any]:
+    return build_insight_summary(session, user_id)
+
+
+def build_insight_summary(session: Session, user_id: str, *, window_days: int = INSIGHT_NUTRITION_LOOKBACK_DAYS) -> dict[str, Any]:
     now = utcnow()
+    nutrition_cutoff = now - timedelta(days=max(window_days, 14))
+    weight_cutoff = now - timedelta(days=max(window_days, INSIGHT_WEIGHT_LOOKBACK_DAYS))
+    workout_cutoff = now - timedelta(days=max(window_days, INSIGHT_WORKOUT_LOOKBACK_DAYS))
+
     meals = session.scalars(
-        select(MealEntry).where(MealEntry.user_id == user_id, MealEntry.deleted_at.is_(None)).order_by(MealEntry.logged_at.asc())
+        select(MealEntry)
+        .where(
+            MealEntry.user_id == user_id,
+            MealEntry.deleted_at.is_(None),
+            MealEntry.logged_at >= nutrition_cutoff,
+        )
+        .order_by(MealEntry.logged_at.asc())
     ).all()
     workouts = session.scalars(
         select(WorkoutSession)
-        .where(WorkoutSession.user_id == user_id, WorkoutSession.deleted_at.is_(None))
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.deleted_at.is_(None),
+            WorkoutSession.started_at >= workout_cutoff,
+        )
         .order_by(WorkoutSession.started_at.asc())
     ).all()
     weight_entries = session.scalars(
         select(WeightEntry)
-        .where(WeightEntry.user_id == user_id, WeightEntry.deleted_at.is_(None))
+        .where(
+            WeightEntry.user_id == user_id,
+            WeightEntry.deleted_at.is_(None),
+            WeightEntry.logged_at >= weight_cutoff,
+        )
         .order_by(WeightEntry.logged_at.asc())
     ).all()
     goals = session.scalars(
@@ -75,6 +113,14 @@ def compute_insight_payload(session: Session, user_id: str) -> dict[str, Any]:
 
     weights = [row.weight_kg for row in weight_entries]
     latest_weight = weight_entries[-1].weight_kg if weight_entries else None
+    if latest_weight is None:
+        latest_weight_row = session.scalars(
+            select(WeightEntry)
+            .where(WeightEntry.user_id == user_id, WeightEntry.deleted_at.is_(None))
+            .order_by(WeightEntry.logged_at.desc())
+            .limit(1)
+        ).first()
+        latest_weight = latest_weight_row.weight_kg if latest_weight_row else None
     weight_trend = weight_trend_per_week(weights)
     trend_7 = rolling_average(weights, 7)
     trend_30 = rolling_average(weights, 30)
@@ -140,6 +186,7 @@ def compute_insight_payload(session: Session, user_id: str) -> dict[str, Any]:
         "recovery_flags": recovery_flags,
         "recommendations": recommendations,
         "generated_at": now.isoformat(),
+        "window_days": window_days,
     }
 
 

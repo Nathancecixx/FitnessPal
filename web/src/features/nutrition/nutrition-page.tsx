@@ -48,9 +48,10 @@ function toEditableMealDraft(meal: MealEntry): EditableMealDraft {
 }
 
 export function NutritionPage() {
-  const foodsQuery = useQuery({ queryKey: ['foods'], queryFn: () => api.listFoods() })
+  const [mealLimit, setMealLimit] = useState(10)
+  const foodsQuery = useQuery({ queryKey: ['foods'], queryFn: () => api.listFoods({ limit: 100 }) })
   const recipesQuery = useQuery({ queryKey: ['recipes'], queryFn: api.listRecipes })
-  const mealsQuery = useQuery({ queryKey: ['meals'], queryFn: api.listMeals })
+  const mealsQuery = useQuery({ queryKey: ['meals', mealLimit], queryFn: () => api.listMeals({ limit: mealLimit }) })
   const templatesQuery = useQuery({ queryKey: ['meal-templates'], queryFn: api.listMealTemplates })
   const photosQuery = useQuery({
     queryKey: ['meal-photos'],
@@ -156,6 +157,7 @@ export function NutritionPage() {
         queryClient.invalidateQueries({ queryKey: ['meals'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -185,6 +187,7 @@ export function NutritionPage() {
         queryClient.invalidateQueries({ queryKey: ['meals'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -200,6 +203,7 @@ export function NutritionPage() {
         queryClient.invalidateQueries({ queryKey: ['meals'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -262,6 +266,7 @@ export function NutritionPage() {
         queryClient.invalidateQueries({ queryKey: ['meals'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
     onError: (error) => setPhotoStatus(error.message),
@@ -275,6 +280,7 @@ export function NutritionPage() {
         queryClient.invalidateQueries({ queryKey: ['meals'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
     onError: (error) => setPhotoStatus(error.message),
@@ -290,6 +296,7 @@ export function NutritionPage() {
         queryClient.invalidateQueries({ queryKey: ['meals'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -442,14 +449,16 @@ export function NutritionPage() {
 
           <Panel title="Recent meals" subtitle="Your latest entries stay visible so you can sanity-check the day quickly.">
             <div className="space-y-3">
-              {(mealsQuery.data?.items ?? []).slice(0, 5).map((meal) => (
+              {(mealsQuery.data?.items ?? []).map((meal) => (
                 <div key={meal.id} className="rounded-[22px] bg-slate-950 px-4 py-4 text-canvas">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="font-display text-xl">{meal.meal_type}</div>
                       <div className="mt-1 text-xs uppercase tracking-[0.2em] text-slate-400">{new Date(meal.logged_at).toLocaleString()}</div>
                     </div>
-                    <div className="rounded-full bg-white/10 px-3 py-2 text-sm">{Math.round(meal.totals.calories)} kcal</div>
+                    <div className="rounded-full bg-white/10 px-3 py-2 text-sm">
+                      {'sync_status' in meal && meal.sync_status === 'queued' ? 'Queued sync' : `${Math.round(meal.totals.calories)} kcal`}
+                    </div>
                   </div>
                   <div className="mt-3 text-sm text-slate-300">{meal.items.map((item) => item.label).join(', ')}</div>
                   <div className="mt-4 flex flex-wrap gap-2">
@@ -547,6 +556,11 @@ export function NutritionPage() {
                 </div>
               ))}
               {!mealsQuery.data?.items?.length ? <EmptyState title="No meals yet" body="Use the quick log, a saved repeat, or a food photo to start building your day." /> : null}
+              {mealsQuery.data?.has_more ? (
+                <ActionButton tone="secondary" onClick={() => setMealLimit((current) => current + 10)} className="w-full sm:w-auto">
+                  Load more meals
+                </ActionButton>
+              ) : null}
             </div>
           </Panel>
         </div>

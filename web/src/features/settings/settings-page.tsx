@@ -31,16 +31,18 @@ function resolveSetupUrl(result: UserSetupResponse) {
 }
 
 export function SettingsPage() {
+  const [jobLimit, setJobLimit] = useState(20)
+  const [exportLimit, setExportLimit] = useState(10)
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession })
   const isAdmin = Boolean(sessionQuery.data?.user?.is_admin)
   const goalsQuery = useQuery({ queryKey: ['goals'], queryFn: api.listGoals })
   const apiKeysQuery = useQuery({ queryKey: ['api-keys'], queryFn: api.listApiKeys })
   const usersQuery = useQuery({ queryKey: ['users'], queryFn: api.listUsers, enabled: isAdmin })
-  const exportsQuery = useQuery({ queryKey: ['exports'], queryFn: api.listExports })
+  const exportsQuery = useQuery({ queryKey: ['exports', exportLimit], queryFn: () => api.listExports({ limit: exportLimit }) })
   const runtimeQuery = useQuery({ queryKey: ['runtime'], queryFn: api.getRuntime })
   const jobsQuery = useQuery({
-    queryKey: ['jobs'],
-    queryFn: () => api.listJobs(),
+    queryKey: ['jobs', jobLimit],
+    queryFn: () => api.listJobs({ limit: jobLimit }),
     refetchInterval: 5000,
   })
 
@@ -67,6 +69,7 @@ export function SettingsPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['goals'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -113,6 +116,7 @@ export function SettingsPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['goals'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -267,6 +271,11 @@ export function SettingsPage() {
                 </div>
               ))}
               {!exportsQuery.data?.items?.length ? <EmptyState title="No exports yet" body="Create a backup before large refactors or before testing a new client against your data." /> : null}
+              {exportsQuery.data?.has_more ? (
+                <ActionButton tone="secondary" onClick={() => setExportLimit((current) => current + 10)} className="w-full sm:w-auto">
+                  Load more exports
+                </ActionButton>
+              ) : null}
             </div>
             <div className="mt-5 rounded-[24px] bg-slate-50 p-4">
               <LabelledTextArea label="Restore JSON" value={restoreText} onChange={setRestoreText} rows={8} placeholder="Paste a FitnessPal export payload here" />
@@ -300,6 +309,11 @@ export function SettingsPage() {
                 </div>
               ))}
               {!jobsQuery.data?.items?.length ? <EmptyState title="No jobs yet" body="As you log meals, upload photos, or trigger backups, the worker queue will appear here." /> : null}
+              {jobsQuery.data?.has_more ? (
+                <ActionButton tone="secondary" onClick={() => setJobLimit((current) => current + 20)} className="w-full sm:w-auto">
+                  Load more jobs
+                </ActionButton>
+              ) : null}
             </div>
           </Panel>
         </div>

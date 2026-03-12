@@ -53,7 +53,7 @@ function coachSourceLabel(advice: AssistantCoachAdvice | undefined, briefSource:
 }
 
 export function InsightsPage() {
-  const insightsQuery = useQuery({ queryKey: ['insights'], queryFn: api.getInsights })
+  const insightsQuery = useQuery({ queryKey: ['insights-summary'], queryFn: () => api.getInsightSummary(90) })
   const briefQuery = useQuery({ queryKey: ['assistant-brief'], queryFn: api.getAssistantBrief, retry: false })
   const [coachPrompt, setCoachPrompt] = useState('What should I focus on over the next 3 days based on my current logs?')
 
@@ -62,6 +62,7 @@ export function InsightsPage() {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
       ])
@@ -74,6 +75,7 @@ export function InsightsPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -91,8 +93,7 @@ export function InsightsPage() {
     askCoach.mutate(cleanedPrompt)
   }
 
-  const snapshot = insightsQuery.data?.snapshot
-  const payload = snapshot?.payload
+  const payload = insightsQuery.data?.summary
   const brief = briefQuery.data?.brief
   const advice = askCoach.data?.advice
   const calorieEntries = Object.entries(payload?.nutrition.daily_calories ?? {})
@@ -309,7 +310,7 @@ export function InsightsPage() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_360px]">
         <div className="space-y-4">
-          <Panel title="Nutrition and trend charts" subtitle={`Snapshot generated ${new Date(snapshot.created_at).toLocaleString()}`}>
+          <Panel title="Nutrition and trend charts" subtitle={`Snapshot generated ${new Date(payload.generated_at).toLocaleString()}`}>
             <div className="grid gap-4 lg:grid-cols-2">
               <EChart
                 style={{ height: 280 }}

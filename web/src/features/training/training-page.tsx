@@ -2,7 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
 import { ActionButton, EmptyState, LabelledInput, LabelledSelect, PageIntro, Panel } from '../../components/ui'
-import { api, type WorkoutSession, type WorkoutTemplate } from '../../lib/api'
+import { api, type Routine, type WorkoutSession, type WorkoutTemplate } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
 
 type SessionBlockDraft = {
@@ -20,6 +20,23 @@ type ExerciseDraft = {
   load_increment: string
 }
 
+type RoutineExerciseDraft = {
+  exercise_id: string
+  day_label: string
+  target_sets: string
+  target_reps_min: string
+  target_reps_max: string
+  target_rir: string
+}
+
+type RoutineDraft = {
+  name: string
+  goal: string
+  schedule_notes: string
+  notes: string
+  items: RoutineExerciseDraft[]
+}
+
 function createSessionBlockDraft(exerciseId = ''): SessionBlockDraft {
   return {
     exercise_id: exerciseId,
@@ -28,6 +45,29 @@ function createSessionBlockDraft(exerciseId = ''): SessionBlockDraft {
     load_kg: '0',
     rir: '2',
   }
+}
+
+function createRoutineExerciseDraft(): RoutineExerciseDraft {
+  return {
+    exercise_id: '',
+    day_label: 'Day 1',
+    target_sets: '3',
+    target_reps_min: '6',
+    target_reps_max: '10',
+    target_rir: '2',
+  }
+}
+
+function buildBlocksFromRoutine(routine: Routine, dayLabel: string): SessionBlockDraft[] {
+  return routine.items
+    .filter((item) => item.day_label === dayLabel)
+    .map((item) => ({
+      exercise_id: item.exercise_id,
+      target_sets: String(item.target_sets),
+      reps: String(item.target_reps_max),
+      load_kg: '0',
+      rir: item.target_rir != null ? String(item.target_rir) : '2',
+    }))
 }
 
 function buildBlocksFromTemplate(template: WorkoutTemplate): SessionBlockDraft[] {
@@ -102,7 +142,8 @@ function summarizeSession(session: WorkoutSession, exerciseNameById: Record<stri
 
 export function TrainingPage() {
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
-  const sessionsQuery = useQuery({ queryKey: ['workout-sessions'], queryFn: api.listWorkoutSessions })
+  const sessionsQuery = useQuery({ queryKey: ['workout-sessions'], queryFn: () => api.listWorkoutSessions({ limit: 12 }) })
+  const routinesQuery = useQuery({ queryKey: ['routines'], queryFn: api.listRoutines })
   const templatesQuery = useQuery({ queryKey: ['workout-templates'], queryFn: api.listWorkoutTemplates })
   const [selectedExerciseId, setSelectedExerciseId] = useState('')
   const [exerciseDraft, setExerciseDraft] = useState<ExerciseDraft>({
@@ -112,15 +153,24 @@ export function TrainingPage() {
     load_increment: '2.5',
   })
   const [sessionDraft, setSessionDraft] = useState({
+    routine_id: '',
     notes: '',
     perceived_energy: '',
     bodyweight_kg: '',
     blocks: [createSessionBlockDraft()],
   })
+  const [routineDraft, setRoutineDraft] = useState<RoutineDraft>({
+    name: '',
+    goal: '',
+    schedule_notes: '',
+    notes: '',
+    items: [createRoutineExerciseDraft()],
+  })
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
 
   const exercises = exercisesQuery.data?.items ?? []
   const sessions = sessionsQuery.data?.items ?? []
+  const routines = routinesQuery.data?.items ?? []
   const templates = templatesQuery.data?.items ?? []
 
   const exerciseNameById = useMemo(
@@ -134,8 +184,22 @@ export function TrainingPage() {
   )
 
   const quickExercises = useMemo(() => exercises.slice(0, 8), [exercises])
+  const quickRoutines = useMemo(() => routines.slice(0, 4), [routines])
   const recentSessions = useMemo(() => sessions.slice(0, 4), [sessions])
   const quickTemplates = useMemo(() => templates.slice(0, 4), [templates])
+  const routineNameById = useMemo(
+    () => Object.fromEntries(routines.map((routine) => [routine.id, routine.name])),
+    [routines],
+  )
+  const routineStats = useMemo(() => {
+    const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000)
+    return Object.fromEntries(routines.map((routine) => {
+      const plannedDays = new Set(routine.items.map((item) => item.day_label)).size
+      const recentCount = sessions.filter((session) =>
+        session.routine_id === routine.id && new Date(session.started_at).getTime() >= cutoff).length
+      return [routine.id, { plannedDays, recentCount }]
+    }))
+  }, [routines, sessions])
 
   const progressionQuery = useQuery({
     queryKey: ['exercise-progression', selectedExerciseId],
@@ -156,13 +220,55 @@ export function TrainingPage() {
     },
   })
 
+  const createRoutine = useMutation({
+    mutationFn: () => api.createRoutine({
+      name: routineDraft.name,
+      goal: routineDraft.goal || undefined,
+      schedule_notes: routineDraft.schedule_notes || undefined,
+      notes: routineDraft.notes || undefined,
+      items: routineDraft.items
+        .filter((item) => item.exercise_id)
+        .map((item, index) => ({
+          exercise_id: item.exercise_id,
+          day_label: item.day_label || 'Day 1',
+          order_index: index,
+          target_sets: Number(item.target_sets),
+          target_reps_min: Number(item.target_reps_min),
+          target_reps_max: Number(item.target_reps_max),
+          target_rir: item.target_rir ? Number(item.target_rir) : null,
+        })),
+    }),
+    onSuccess: async () => {
+      setRoutineDraft({
+        name: '',
+        goal: '',
+        schedule_notes: '',
+        notes: '',
+        items: [createRoutineExerciseDraft()],
+      })
+      await queryClient.invalidateQueries({ queryKey: ['routines'] })
+    },
+  })
+
+  const deleteRoutine = useMutation({
+    mutationFn: (routineId: string) => api.deleteRoutine(routineId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['routines'] }),
+        queryClient.invalidateQueries({ queryKey: ['workout-templates'] }),
+      ])
+    },
+  })
+
   const saveSession = useMutation({
     mutationFn: () => (editingSessionId ? api.updateWorkoutSession(editingSessionId, {
+      routine_id: sessionDraft.routine_id || undefined,
       notes: sessionDraft.notes || undefined,
       perceived_energy: sessionDraft.perceived_energy ? Number(sessionDraft.perceived_energy) : undefined,
       bodyweight_kg: sessionDraft.bodyweight_kg ? Number(sessionDraft.bodyweight_kg) : undefined,
       sets: expandBlocksToSets(sessionDraft.blocks),
     }) : api.createWorkoutSession({
+      routine_id: sessionDraft.routine_id || undefined,
       notes: sessionDraft.notes || undefined,
       perceived_energy: sessionDraft.perceived_energy ? Number(sessionDraft.perceived_energy) : undefined,
       bodyweight_kg: sessionDraft.bodyweight_kg ? Number(sessionDraft.bodyweight_kg) : undefined,
@@ -170,6 +276,7 @@ export function TrainingPage() {
     })),
     onSuccess: async () => {
       setSessionDraft({
+        routine_id: '',
         notes: '',
         perceived_energy: '',
         bodyweight_kg: '',
@@ -180,6 +287,7 @@ export function TrainingPage() {
         queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
         queryClient.invalidateQueries({ queryKey: ['exercise-progression'] }),
       ])
     },
@@ -191,6 +299,7 @@ export function TrainingPage() {
       if (editingSessionId === sessionId) {
         setEditingSessionId(null)
         setSessionDraft({
+          routine_id: '',
           notes: '',
           perceived_energy: '',
           bodyweight_kg: '',
@@ -201,6 +310,7 @@ export function TrainingPage() {
         queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
+        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -238,6 +348,7 @@ export function TrainingPage() {
     setEditingSessionId(null)
     setSessionDraft((current) => ({
       ...current,
+      routine_id: template.routine_id ?? '',
       notes: template.name,
       blocks: blocks.length ? blocks : [createSessionBlockDraft()],
     }))
@@ -252,12 +363,28 @@ export function TrainingPage() {
     setEditingSessionId(null)
     setSessionDraft((current) => ({
       ...current,
+      routine_id: session.routine_id ?? '',
       notes: session.notes ?? 'Repeat session',
       perceived_energy: session.perceived_energy != null ? String(session.perceived_energy) : current.perceived_energy,
       bodyweight_kg: session.bodyweight_kg != null ? String(session.bodyweight_kg) : current.bodyweight_kg,
       blocks: blocks.length ? blocks : [createSessionBlockDraft()],
     }))
 
+    if (blocks[0]?.exercise_id) {
+      setSelectedExerciseId(blocks[0].exercise_id)
+    }
+  }
+
+  function launchRoutineDay(routine: Routine, dayLabel: string) {
+    const blocks = buildBlocksFromRoutine(routine, dayLabel)
+    setEditingSessionId(null)
+    setSessionDraft({
+      routine_id: routine.id,
+      notes: `${routine.name} - ${dayLabel}`,
+      perceived_energy: '',
+      bodyweight_kg: '',
+      blocks: blocks.length ? blocks : [createSessionBlockDraft()],
+    })
     if (blocks[0]?.exercise_id) {
       setSelectedExerciseId(blocks[0].exercise_id)
     }
@@ -281,6 +408,21 @@ export function TrainingPage() {
               <div className="space-y-3">
                 <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Quick starts</div>
                 <div className="grid gap-2 sm:grid-cols-2">
+                  {quickRoutines.map((routine) => (
+                    <div key={routine.id} className="rounded-[22px] border border-slate-200 bg-lime/15 px-4 py-4">
+                      <div className="font-semibold text-slate-950">{routine.name}</div>
+                      <div className="mt-1 text-sm text-slate-500">
+                        {routineStats[routine.id]?.recentCount ?? 0} sessions in the last 7 days / {routineStats[routine.id]?.plannedDays ?? 0} planned days
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {Array.from(new Set(routine.items.map((item) => item.day_label))).map((dayLabel) => (
+                          <ActionButton key={`${routine.id}-${dayLabel}`} tone="secondary" onClick={() => launchRoutineDay(routine, dayLabel)} className="w-auto">
+                            {dayLabel}
+                          </ActionButton>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                   {quickTemplates.map((template) => (
                     <button
                       key={template.id}
@@ -289,7 +431,9 @@ export function TrainingPage() {
                       onClick={() => applyTemplate(template)}
                     >
                       <div className="font-semibold text-slate-950">{template.name}</div>
-                      <div className="mt-1 text-sm text-slate-500">{template.items.length} lift slots</div>
+                      <div className="mt-1 text-sm text-slate-500">
+                        {template.items.length} lift slots{template.routine_id ? ` / ${routineNameById[template.routine_id] ?? 'Routine linked'}` : ''}
+                      </div>
                     </button>
                   ))}
                   {recentSessions.slice(0, 2).map((session) => (
@@ -300,11 +444,14 @@ export function TrainingPage() {
                       onClick={() => repeatSession(session)}
                     >
                       <div className="font-semibold text-slate-950">{session.notes || 'Repeat last session'}</div>
-                      <div className="mt-1 text-sm text-slate-500">{summarizeSession(session, exerciseNameById) || `${session.total_sets} sets`}</div>
+                      <div className="mt-1 text-sm text-slate-500">
+                        {summarizeSession(session, exerciseNameById) || `${session.total_sets} sets`}
+                        {session.routine_id ? ` / ${routineNameById[session.routine_id] ?? 'Routine session'}` : ''}
+                      </div>
                     </button>
                   ))}
                 </div>
-                {!quickTemplates.length && !recentSessions.length ? (
+                {!quickRoutines.length && !quickTemplates.length && !recentSessions.length ? (
                   <EmptyState title="No quick starts yet" body="Create a few exercises, save a template, or log one session and this page becomes much faster to use." />
                 ) : null}
               </div>
@@ -316,6 +463,11 @@ export function TrainingPage() {
                   saveSession.mutate()
                 }}
               >
+                {sessionDraft.routine_id ? (
+                  <div className="rounded-[20px] bg-lime/15 px-4 py-3 text-sm text-slate-700">
+                    Routine session: {routineNameById[sessionDraft.routine_id] ?? 'Custom routine'}
+                  </div>
+                ) : null}
                 <LabelledInput
                   label={editingSessionId ? 'Session label or notes (editing)' : 'Session label or notes'}
                   value={sessionDraft.notes}
@@ -382,7 +534,7 @@ export function TrainingPage() {
                     Copy last lift
                   </ActionButton>
                   <ActionButton type="submit" className="w-full sm:w-auto">{editingSessionId ? 'Save workout changes' : 'Log workout'}</ActionButton>
-                  {editingSessionId ? <ActionButton tone="secondary" onClick={() => { setEditingSessionId(null); setSessionDraft({ notes: '', perceived_energy: '', bodyweight_kg: '', blocks: [createSessionBlockDraft()] }) }} className="w-full sm:w-auto">Cancel edit</ActionButton> : null}
+                  {editingSessionId ? <ActionButton tone="secondary" onClick={() => { setEditingSessionId(null); setSessionDraft({ routine_id: '', notes: '', perceived_energy: '', bodyweight_kg: '', blocks: [createSessionBlockDraft()] }) }} className="w-full sm:w-auto">Cancel edit</ActionButton> : null}
                 </div>
 
                 <details className="rounded-[22px] border border-slate-200 bg-white">
@@ -420,8 +572,11 @@ export function TrainingPage() {
                     <div>
                       <div className="font-display text-xl">{session.notes || 'Workout session'}</div>
                       <div className="mt-1 text-xs uppercase tracking-[0.2em] text-slate-400">{new Date(session.started_at).toLocaleString()}</div>
+                      {session.routine_id ? <div className="mt-2 text-sm text-slate-300">{routineNameById[session.routine_id] ?? 'Routine session'}</div> : null}
                     </div>
-                    <div className="rounded-full bg-white/10 px-3 py-2 text-sm">{Math.round(session.total_volume_kg)} kg</div>
+                    <div className="rounded-full bg-white/10 px-3 py-2 text-sm">
+                      {'sync_status' in session && session.sync_status === 'queued' ? 'Queued sync' : `${Math.round(session.total_volume_kg)} kg`}
+                    </div>
                   </div>
                   <div className="mt-3 text-sm text-slate-300">
                     {summarizeSession(session, exerciseNameById) || `${session.total_sets} working sets logged`}
@@ -434,6 +589,7 @@ export function TrainingPage() {
                         setEditingSessionId(session.id)
                         const blocks = buildBlocksFromSession(session)
                         setSessionDraft({
+                          routine_id: session.routine_id ?? '',
                           notes: session.notes ?? '',
                           perceived_energy: session.perceived_energy != null ? String(session.perceived_energy) : '',
                           bodyweight_kg: session.bodyweight_kg != null ? String(session.bodyweight_kg) : '',
@@ -501,7 +657,9 @@ export function TrainingPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="font-semibold text-slate-950">{template.name}</div>
-                      <div className="mt-1 text-sm text-slate-500">{template.items.length} lift slots</div>
+                      <div className="mt-1 text-sm text-slate-500">
+                        {template.items.length} lift slots{template.routine_id ? ` / ${routineNameById[template.routine_id] ?? 'Routine linked'}` : ''}
+                      </div>
                     </div>
                     <ActionButton tone="secondary" onClick={() => applyTemplate(template)} className="w-auto">Use</ActionButton>
                   </div>
@@ -510,6 +668,109 @@ export function TrainingPage() {
               {!quickTemplates.length ? <EmptyState title="No templates yet" body="Build repeatable sessions in Templates and they will show up here as quick starts." /> : null}
             </div>
           </Panel>
+
+          <Panel title="Routines" subtitle="Plan days once, launch them fast, and keep an eye on adherence.">
+            <div className="space-y-3">
+              {quickRoutines.map((routine) => (
+                <div key={routine.id} className="rounded-[24px] border border-slate-200 bg-white p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-slate-950">{routine.name}</div>
+                      <div className="mt-1 text-sm text-slate-500">
+                        {routineStats[routine.id]?.recentCount ?? 0} sessions in the last 7 days / {routineStats[routine.id]?.plannedDays ?? 0} planned days
+                      </div>
+                    </div>
+                    <ActionButton tone="secondary" onClick={() => deleteRoutine.mutate(routine.id)} className="w-auto">Delete</ActionButton>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {Array.from(new Set(routine.items.map((item) => item.day_label))).map((dayLabel) => (
+                      <ActionButton key={`${routine.id}-${dayLabel}`} tone="secondary" onClick={() => launchRoutineDay(routine, dayLabel)} className="w-auto">
+                        Start {dayLabel}
+                      </ActionButton>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {!quickRoutines.length ? <EmptyState title="No routines yet" body="Create a routine to group training days and make adherence visible." /> : null}
+            </div>
+          </Panel>
+
+          <details className="rounded-[24px] border border-slate-200 bg-white/90 shadow-halo">
+            <summary className="cursor-pointer list-none px-4 py-4">
+              <div className="font-display text-xl text-slate-950">Routine builder</div>
+              <div className="mt-1 text-sm text-slate-500">Define day labels and target sets so session launch becomes one tap.</div>
+            </summary>
+            <div className="border-t border-slate-200 px-4 py-4">
+              <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); createRoutine.mutate() }}>
+                <LabelledInput label="Routine name" value={routineDraft.name} onChange={(value) => setRoutineDraft((current) => ({ ...current, name: value }))} placeholder="Upper / Lower" />
+                <LabelledInput label="Goal" value={routineDraft.goal} onChange={(value) => setRoutineDraft((current) => ({ ...current, goal: value }))} placeholder="Hypertrophy phase" />
+                <LabelledInput label="Schedule notes" value={routineDraft.schedule_notes} onChange={(value) => setRoutineDraft((current) => ({ ...current, schedule_notes: value }))} placeholder="Mon Tue Thu Fri" />
+                <LabelledInput label="Notes" value={routineDraft.notes} onChange={(value) => setRoutineDraft((current) => ({ ...current, notes: value }))} placeholder="Keep compounds first" />
+                {routineDraft.items.map((item, index) => (
+                  <div key={index} className="rounded-[22px] bg-slate-50 p-4 ring-1 ring-slate-200">
+                    <div className="grid gap-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <LabelledInput label="Day label" value={item.day_label} onChange={(value) => setRoutineDraft((current) => {
+                          const items = [...current.items]
+                          items[index] = { ...items[index], day_label: value }
+                          return { ...current, items }
+                        })} />
+                        <LabelledSelect
+                          label="Exercise"
+                          value={item.exercise_id}
+                          onChange={(value) => setRoutineDraft((current) => {
+                            const items = [...current.items]
+                            items[index] = { ...items[index], exercise_id: value }
+                            return { ...current, items }
+                          })}
+                          options={[
+                            { label: 'Select exercise', value: '' },
+                            ...exercises.map((exercise) => ({ label: exercise.name, value: exercise.id })),
+                          ]}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <LabelledInput label="Sets" type="number" value={item.target_sets} onChange={(value) => setRoutineDraft((current) => {
+                          const items = [...current.items]
+                          items[index] = { ...items[index], target_sets: value }
+                          return { ...current, items }
+                        })} />
+                        <LabelledInput label="Target RIR" type="number" value={item.target_rir} onChange={(value) => setRoutineDraft((current) => {
+                          const items = [...current.items]
+                          items[index] = { ...items[index], target_rir: value }
+                          return { ...current, items }
+                        })} />
+                        <LabelledInput label="Rep min" type="number" value={item.target_reps_min} onChange={(value) => setRoutineDraft((current) => {
+                          const items = [...current.items]
+                          items[index] = { ...items[index], target_reps_min: value }
+                          return { ...current, items }
+                        })} />
+                        <LabelledInput label="Rep max" type="number" value={item.target_reps_max} onChange={(value) => setRoutineDraft((current) => {
+                          const items = [...current.items]
+                          items[index] = { ...items[index], target_reps_max: value }
+                          return { ...current, items }
+                        })} />
+                      </div>
+                      <ActionButton tone="secondary" onClick={() => setRoutineDraft((current) => ({
+                        ...current,
+                        items: current.items.length === 1 ? [createRoutineExerciseDraft()] : current.items.filter((_, itemIndex) => itemIndex !== index),
+                      }))} className="w-full sm:w-auto">
+                        Remove routine item
+                      </ActionButton>
+                    </div>
+                  </div>
+                ))}
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <ActionButton tone="secondary" onClick={() => setRoutineDraft((current) => ({ ...current, items: [...current.items, createRoutineExerciseDraft()] }))} className="w-full sm:w-auto">
+                    Add day slot
+                  </ActionButton>
+                  <ActionButton type="submit" className="w-full sm:w-auto" disabled={!routineDraft.name.trim() || createRoutine.isPending}>
+                    Save routine
+                  </ActionButton>
+                </div>
+              </form>
+            </div>
+          </details>
 
           <details className="rounded-[24px] border border-slate-200 bg-white/90 shadow-halo">
             <summary className="cursor-pointer list-none px-4 py-4">
