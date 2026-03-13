@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session
 from app.core.audit import write_audit
 from app.core.database import get_session
 from app.core.idempotency import IdempotentRoute
+from app.core.jobs import enqueue_live_insights_refresh
 from app.core.local_ai import (
     AI_FEATURE_KEYS,
     AiConfigurationError,
     AiProfileReadOnlyError,
+    build_assistant_feed,
     create_profile,
     delete_profile,
     generate_coach_advice,
@@ -21,18 +23,22 @@ from app.core.local_ai import (
     get_latest_coach_brief,
     get_persona_config,
     get_profile,
+    get_today_or_latest_check_in,
     list_profiles,
     refresh_coach_brief,
     refresh_profile_models,
+    resolve_user_timezone,
+    serialize_coach_check_in,
     serialize_coach_brief,
     serialize_profile_summary,
     serialize_persona,
     test_profile,
+    upsert_coach_check_in,
     update_persona,
     update_profile,
     upsert_feature_bindings,
 )
-from app.core.models import InsightSnapshot
+from app.core.models import InsightSnapshot, utcnow
 from app.core.modules import ModuleManifest
 from app.core.security import Actor, require_admin, require_scope
 
@@ -95,12 +101,41 @@ class AssistantCoachAdviceRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=1200)
 
 
+class AssistantCheckInUpdate(BaseModel):
+    sleep_hours: float | None = Field(default=None, ge=0, le=24)
+    readiness_1_5: int | None = Field(default=None, ge=1, le=5)
+    soreness_1_5: int | None = Field(default=None, ge=1, le=5)
+    hunger_1_5: int | None = Field(default=None, ge=1, le=5)
+    note: str | None = Field(default=None, max_length=1000)
+
+
 def _as_http_error(error: Exception) -> HTTPException:
     if isinstance(error, AiProfileReadOnlyError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     if isinstance(error, AiConfigurationError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(error))
+
+
+def _ensure_snapshot(session: Session, user_id: str, *, recompute: bool = False) -> InsightSnapshot:
+    from app.modules.insights import compute_insight_payload, persist_snapshot
+
+    snapshot = session.scalars(
+        select(InsightSnapshot).where(InsightSnapshot.user_id == user_id).order_by(InsightSnapshot.created_at.desc()).limit(1)
+    ).first()
+    if snapshot and not recompute:
+        return snapshot
+
+    payload = compute_insight_payload(session, user_id)
+    return persist_snapshot(session, user_id, payload, source="assistant_refresh" if recompute else "assistant_bootstrap")
+
+
+def _serialize_assistant_check_in(session: Session, user_id: str) -> dict[str, Any] | None:
+    row = get_today_or_latest_check_in(session, user_id)
+    if not row:
+        return None
+    timezone_info, timezone_name = resolve_user_timezone(session, user_id)
+    return serialize_coach_check_in(row, timezone_name, today_date=utcnow().astimezone(timezone_info).date())
 
 
 @router.get("/ai/profiles")
@@ -222,30 +257,58 @@ def update_ai_persona(
     return {"persona": result}
 
 
+@router.get("/assistant/feed")
+def get_assistant_feed(actor: Actor = Depends(assistant_use), session: Session = Depends(get_session)) -> dict[str, Any]:
+    snapshot = _ensure_snapshot(session, actor.user_id)
+    return {"feed": build_assistant_feed(session, actor.user_id, insight_payload=snapshot.payload_json, snapshot=snapshot)}
+
+
+@router.post("/assistant/feed/refresh", status_code=status.HTTP_201_CREATED)
+def refresh_assistant_feed(actor: Actor = Depends(assistant_use), session: Session = Depends(get_session)) -> dict[str, Any]:
+    snapshot = _ensure_snapshot(session, actor.user_id, recompute=True)
+    feed = build_assistant_feed(session, actor.user_id, insight_payload=snapshot.payload_json, snapshot=snapshot)
+    write_audit(session, actor, "assistant_feed.refreshed", "assistant_feed", None, {"snapshot_id": snapshot.id})
+    return {"feed": feed}
+
+
+@router.get("/assistant/check-in")
+def get_assistant_check_in(actor: Actor = Depends(assistant_use), session: Session = Depends(get_session)) -> dict[str, Any]:
+    return {"check_in": _serialize_assistant_check_in(session, actor.user_id)}
+
+
+@router.put("/assistant/check-in")
+def update_assistant_check_in(
+    payload: AssistantCheckInUpdate,
+    actor: Actor = Depends(assistant_use),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = upsert_coach_check_in(session, actor.user_id, **payload.model_dump())
+    session.commit()
+    session.refresh(row)
+    enqueue_live_insights_refresh(session, actor.user_id, {"source": "coach_check_in", "check_in_id": row.id, "user_id": actor.user_id})
+    write_audit(session, actor, "assistant_check_in.updated", "assistant_check_in", row.id, payload.model_dump())
+    return {"check_in": _serialize_assistant_check_in(session, actor.user_id)}
+
+
 @router.get("/assistant/brief")
 def get_assistant_brief(actor: Actor = Depends(assistant_use), session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = get_latest_coach_brief(session, actor.user_id)
-    if not row:
-        snapshot = session.scalars(
-            select(InsightSnapshot).where(InsightSnapshot.user_id == actor.user_id).order_by(InsightSnapshot.created_at.desc()).limit(1)
-        ).first()
-        if snapshot:
-            row = refresh_coach_brief(session, actor.user_id, snapshot)
-    if not row:
+    snapshot = _ensure_snapshot(session, actor.user_id)
+    feed = build_assistant_feed(session, actor.user_id, insight_payload=snapshot.payload_json, snapshot=snapshot)
+    brief = feed.get("brief")
+    if not brief:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No coach brief is available yet.")
-    return {"brief": serialize_coach_brief(row, get_persona_config(session))}
+    return {"brief": brief}
 
 
 @router.post("/assistant/brief/refresh", status_code=status.HTTP_201_CREATED)
 def refresh_assistant_brief(actor: Actor = Depends(assistant_use), session: Session = Depends(get_session)) -> dict[str, Any]:
-    snapshot = session.scalars(
-        select(InsightSnapshot).where(InsightSnapshot.user_id == actor.user_id).order_by(InsightSnapshot.created_at.desc()).limit(1)
-    ).first()
-    if not snapshot:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Create an insight snapshot before refreshing the coach brief.")
-    row = refresh_coach_brief(session, actor.user_id, snapshot)
-    write_audit(session, actor, "assistant_brief.refreshed", "assistant_brief", row.id, {"snapshot_id": snapshot.id})
-    return {"brief": serialize_coach_brief(row, get_persona_config(session))}
+    snapshot = _ensure_snapshot(session, actor.user_id, recompute=True)
+    feed = build_assistant_feed(session, actor.user_id, insight_payload=snapshot.payload_json, snapshot=snapshot)
+    brief = feed.get("brief")
+    if not brief:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No coach brief is available yet.")
+    write_audit(session, actor, "assistant_brief.refreshed", "assistant_brief", brief.get("id"), {"snapshot_id": snapshot.id})
+    return {"brief": brief}
 
 
 @router.post("/assistant/advice")
@@ -254,11 +317,7 @@ def get_assistant_advice(
     actor: Actor = Depends(assistant_use),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    snapshot = session.scalars(
-        select(InsightSnapshot).where(InsightSnapshot.user_id == actor.user_id).order_by(InsightSnapshot.created_at.desc()).limit(1)
-    ).first()
-    if not snapshot:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Create an insight snapshot before asking the coach for advice.")
+    snapshot = _ensure_snapshot(session, actor.user_id)
     advice = generate_coach_advice(session, actor.user_id, snapshot.payload_json, payload.prompt)
     write_audit(
         session,

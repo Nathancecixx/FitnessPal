@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
@@ -16,6 +17,7 @@ from app.core.audit import write_audit
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.idempotency import IdempotentRoute
+from app.core.jobs import enqueue_live_insights_refresh
 from app.core.local_ai import inspect_ai_runtime, parse_natural_language_entry
 from app.core.modules import ModuleManifest
 from app.core.ownership import ensure_owned
@@ -93,7 +95,8 @@ class UserCreate(BaseModel):
 
 
 class UserPreferencesUpdate(BaseModel):
-    weight_unit: Literal["kg", "lbs"] = "kg"
+    weight_unit: Literal["kg", "lbs"] | None = None
+    timezone: str | None = Field(default=None, max_length=64)
 
 
 def admin_write(actor: Actor = Depends(platform_write)) -> Actor:
@@ -201,6 +204,7 @@ def load_user_preferences(session: Session, user_id: str) -> UserPreference | No
 def serialize_user_preferences(preferences: UserPreference | None) -> dict[str, Any]:
     return {
         "weight_unit": preferences.weight_unit if preferences else "kg",
+        "timezone": preferences.timezone if preferences else None,
         "created_at": preferences.created_at.isoformat() if preferences else None,
         "updated_at": preferences.updated_at.isoformat() if preferences else None,
     }
@@ -321,7 +325,18 @@ def update_user_preferences(
         preferences = UserPreference(user_id=actor.user_id)
         session.add(preferences)
 
-    preferences.weight_unit = payload.weight_unit
+    if payload.weight_unit is not None:
+        preferences.weight_unit = payload.weight_unit
+    if payload.timezone is not None:
+        timezone_name = payload.timezone.strip()
+        if timezone_name:
+            try:
+                ZoneInfo(timezone_name)
+            except ZoneInfoNotFoundError as error:
+                raise HTTPException(status_code=422, detail="Timezone must be a valid IANA timezone.") from error
+            preferences.timezone = timezone_name
+        else:
+            preferences.timezone = None
     session.commit()
     session.refresh(preferences)
     write_audit(session, actor, "preferences.updated", "user_preferences", preferences.id, payload.model_dump())
@@ -479,6 +494,7 @@ def create_goal(
     session.add(goal)
     session.commit()
     session.refresh(goal)
+    enqueue_live_insights_refresh(session, actor.user_id, {"source": "goal", "goal_id": goal.id, "user_id": actor.user_id})
     write_audit(session, actor, "goal.created", "goal", goal.id, payload.model_dump())
     return serialize_goal(goal)
 
@@ -488,6 +504,7 @@ def delete_goal(goal_id: str, actor: Actor = Depends(platform_write), session: S
     goal = ensure_owned(session, Goal, goal_id, actor.user_id, "Goal not found.")
     goal.deleted_at = utcnow()
     session.commit()
+    enqueue_live_insights_refresh(session, actor.user_id, {"source": "goal_delete", "goal_id": goal.id, "user_id": actor.user_id})
     write_audit(session, actor, "goal.deleted", "goal", goal.id, {"title": goal.title})
     return {"status": "deleted", "id": goal.id}
 

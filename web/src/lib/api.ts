@@ -382,6 +382,7 @@ export type SessionInfo = {
 
 export type UserPreferences = {
   weight_unit: WeightUnit
+  timezone?: string | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -510,6 +511,61 @@ export type AssistantBrief = {
   persona_tagline: string
   created_at: string
   updated_at: string
+}
+
+export type CoachCheckIn = {
+  id: string
+  check_in_date: string
+  sleep_hours?: number | null
+  readiness_1_5?: number | null
+  soreness_1_5?: number | null
+  hunger_1_5?: number | null
+  note?: string | null
+  timezone: string
+  is_today: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type CoachNudge = {
+  id: string
+  surface: 'coach' | 'nutrition' | 'training' | 'weight'
+  title: string
+  body: string
+  tone: 'warning' | 'info' | 'positive'
+  route?: string | null
+  cta_label?: string | null
+}
+
+export type AssistantFeed = {
+  generated_at: string
+  source: string
+  freshness: {
+    timezone: string
+    local_date: string
+    last_meal_at?: string | null
+    last_workout_at?: string | null
+    last_weight_at?: string | null
+    last_check_in_at?: string | null
+    meals_logged_today: boolean
+    weight_logged_today: boolean
+    check_in_completed_today: boolean
+    workout_logged_last_72h: boolean
+    stale_signals: string[]
+  }
+  top_focus: {
+    title: string
+    summary: string
+    route: string
+    cta_label: string
+  }
+  actions: string[]
+  watchouts: string[]
+  nudges: CoachNudge[]
+  quick_prompts: string[]
+  stats: Record<string, string | number | null>
+  brief?: AssistantBrief | null
+  today_check_in?: CoachCheckIn | null
 }
 
 export type AssistantCoachAdvice = {
@@ -924,7 +980,7 @@ export const api = {
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
   getSession: () => request<SessionInfo>('/auth/session'),
   getUserPreferences: () => request<UserPreferences>('/preferences'),
-  updateUserPreferences: (payload: { weight_unit: WeightUnit }) => request<UserPreferences>('/preferences', { method: 'PUT', body: JSON.stringify(payload) }),
+  updateUserPreferences: (payload: { weight_unit?: WeightUnit; timezone?: string | null }) => request<UserPreferences>('/preferences', { method: 'PUT', body: JSON.stringify(payload) }),
   getDashboard: () => request<{ cards: DashboardCard[]; available_modules: string[] }>('/dashboard'),
   getRuntime: () => request<RuntimeInfo>('/runtime'),
   listJobs: (params: { status?: string; limit?: number; cursor?: string | null } = {}) => request<PagedListResponse<JobRecord>>(`/jobs${buildQueryString(params)}`),
@@ -1007,6 +1063,10 @@ export const api = {
     body: JSON.stringify({ payload }),
   }),
   parseAssistantNote: (note: string) => request<AssistantDraftResponse>('/assistant/parse', { method: 'POST', body: JSON.stringify({ note }) }),
+  getAssistantFeed: () => request<{ feed: AssistantFeed }>('/assistant/feed'),
+  refreshAssistantFeed: () => request<{ feed: AssistantFeed }>('/assistant/feed/refresh', { method: 'POST' }),
+  getCoachCheckIn: () => request<{ check_in: CoachCheckIn | null }>('/assistant/check-in'),
+  updateCoachCheckIn: (payload: Partial<Pick<CoachCheckIn, 'sleep_hours' | 'readiness_1_5' | 'soreness_1_5' | 'hunger_1_5' | 'note'>>) => request<{ check_in: CoachCheckIn | null }>('/assistant/check-in', { method: 'PUT', body: JSON.stringify(payload) }),
   getAssistantBrief: () => request<{ brief: AssistantBrief }>('/assistant/brief'),
   refreshAssistantBrief: () => request<{ brief: AssistantBrief }>('/assistant/brief/refresh', { method: 'POST' }),
   askCoachAdvice: (prompt: string) => request<{ advice: AssistantCoachAdvice }>('/assistant/advice', { method: 'POST', body: JSON.stringify({ prompt }) }),

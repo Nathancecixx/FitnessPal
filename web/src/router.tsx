@@ -8,7 +8,7 @@ const LazyNutritionPage = lazy(async () => ({ default: (await import('./features
 const LazyTrainingPage = lazy(async () => ({ default: (await import('./features/training/training-page')).TrainingPage }))
 const LazyWeightPage = lazy(async () => ({ default: (await import('./features/weight/weight-page')).WeightPage }))
 const LazyTemplatesPage = lazy(async () => ({ default: (await import('./features/templates/templates-page')).TemplatesPage }))
-const LazyInsightsPage = lazy(async () => ({ default: (await import('./features/insights/insights-page')).InsightsPage }))
+const LazyCoachPage = lazy(async () => ({ default: (await import('./features/insights/insights-page')).CoachPage }))
 const LazySettingsPage = lazy(async () => ({ default: (await import('./features/settings/settings-page')).SettingsPage }))
 const LazySetupPasswordPage = lazy(async () => ({ default: (await import('./features/auth/setup-password-page')).SetupPasswordPage }))
 
@@ -56,10 +56,10 @@ function TemplatesPage() {
   )
 }
 
-function InsightsPage() {
+function CoachPage() {
   return (
     <Suspense fallback={<LoadingFallback />}>
-      <LazyInsightsPage />
+      <LazyCoachPage />
     </Suspense>
   )
 }
@@ -87,7 +87,8 @@ const nutritionRoute = createRoute({ getParentRoute: () => rootRoute, path: '/nu
 const trainingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/training', component: TrainingPage })
 const weightRoute = createRoute({ getParentRoute: () => rootRoute, path: '/weight', component: WeightPage })
 const templatesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/templates', component: TemplatesPage })
-const insightsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/insights', component: InsightsPage })
+const coachRoute = createRoute({ getParentRoute: () => rootRoute, path: '/coach', component: CoachPage })
+const insightsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/insights', component: CoachPage })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage })
 const setupPasswordRoute = createRoute({ getParentRoute: () => rootRoute, path: '/setup-password', component: SetupPasswordPage })
 
@@ -97,6 +98,7 @@ const routeTree = rootRoute.addChildren([
   trainingRoute,
   weightRoute,
   templatesRoute,
+  coachRoute,
   insightsRoute,
   settingsRoute,
   setupPasswordRoute,

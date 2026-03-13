@@ -38,6 +38,29 @@ type PersonaDraft = {
   voice_guidelines_json: string
 }
 
+const featureGuidance: Record<string, { label: string; description: string }> = {
+  meal_photo_estimation: {
+    label: 'meal_photo_estimation',
+    description: 'Meal-photo estimation. Favor fast vision-capable models.',
+  },
+  nutrition_label_scan: {
+    label: 'nutrition_label_scan',
+    description: 'Nutrition-label extraction. Accuracy matters more than style.',
+  },
+  assistant_quick_capture: {
+    label: 'assistant_quick_capture',
+    description: 'Draft parsing for natural-language logging.',
+  },
+  coach_brief: {
+    label: 'coach_brief',
+    description: 'Daily proactive coach read. Local-first is recommended.',
+  },
+  coach_advice: {
+    label: 'coach_advice',
+    description: 'On-demand coach answers. Start local-first, then use cloud only if you need more reasoning depth.',
+  },
+}
+
 function stringifyJson(value: unknown) {
   return JSON.stringify(value ?? {}, null, 2)
 }
@@ -135,6 +158,7 @@ export function AiAdminPanel() {
       queryClient.invalidateQueries({ queryKey: ['ai-features'] }),
       queryClient.invalidateQueries({ queryKey: ['ai-persona'] }),
       queryClient.invalidateQueries({ queryKey: ['runtime'] }),
+      queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
       queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
     ])
   }
@@ -363,16 +387,17 @@ export function AiAdminPanel() {
         </div>
       </Panel>
 
-      <Panel title="Feature Routing" subtitle="Choose which backend handles each AI feature, plus optional per-feature overrides.">
+      <Panel title="Feature Routing" subtitle="Choose which backend handles each AI feature, plus optional per-feature overrides. The coach surfaces are designed to work well on local models first.">
         <div className="space-y-4">
           {(featuresQuery.data?.items ?? []).map((binding) => {
             const draft = featureDrafts[binding.feature_key] ?? toFeatureDraft(binding)
+            const guidance = featureGuidance[binding.feature_key] ?? { label: binding.feature_key, description: 'Explicit per-feature AI routing.' }
             return (
               <div key={binding.feature_key} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div>
-                    <div className="font-semibold text-slate-950">{binding.feature_key}</div>
-                    <div className="mt-1 text-sm text-slate-500">{binding.uses_legacy_fallback ? 'Using legacy fallback until a saved profile is assigned.' : 'Explicit per-feature AI routing.'}</div>
+                    <div className="font-semibold text-slate-950">{guidance.label}</div>
+                    <div className="mt-1 text-sm text-slate-500">{binding.uses_legacy_fallback ? 'Using legacy fallback until a saved profile is assigned.' : guidance.description}</div>
                   </div>
                   <div className="rounded-full bg-white px-3 py-1 text-xs text-slate-500">{binding.profile?.name ?? 'Unassigned'}</div>
                 </div>

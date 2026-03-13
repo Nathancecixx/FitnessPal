@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
+import { CoachNudgePanel, filterCoachNudges } from '../../components/coach-panels'
 import { ActionButton, EmptyState, LabelledInput, LabelledSelect, PageIntro, Panel } from '../../components/ui'
 import { api, type Routine, type WorkoutSession, type WorkoutTemplate } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
@@ -149,6 +150,7 @@ function summarizeSession(session: WorkoutSession, exerciseNameById: Record<stri
 export function TrainingPage() {
   const weightUnit = useWeightUnit()
   const weightUnitLabel = getWeightUnitLabel(weightUnit)
+  const feedQuery = useQuery({ queryKey: ['assistant-feed'], queryFn: api.getAssistantFeed, retry: false })
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
   const sessionsQuery = useQuery({ queryKey: ['workout-sessions'], queryFn: () => api.listWorkoutSessions({ limit: 12 }) })
   const routinesQuery = useQuery({ queryKey: ['routines'], queryFn: api.listRoutines })
@@ -218,6 +220,7 @@ export function TrainingPage() {
       return [routine.id, { plannedDays, recentCount }]
     }))
   }, [routines, sessions])
+  const trainingNudges = useMemo(() => filterCoachNudges(feedQuery.data?.feed.nudges, 'training'), [feedQuery.data?.feed.nudges])
 
   const progressionQuery = useQuery({
     queryKey: ['exercise-progression', selectedExerciseId],
@@ -421,6 +424,14 @@ export function TrainingPage() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <div className="space-y-4">
+          <CoachNudgePanel
+            title="Coach cues"
+            subtitle="Keep the next training adjustment visible before the session gets buried under setup details."
+            nudges={trainingNudges}
+            emptyTitle="No training cues right now"
+            emptyBody="As soon as readiness, stall signals, or the next-session setup matters, the coach will surface it here."
+          />
+
           <Panel title={"Start today's workout"} subtitle="Use the fastest path first, then fine-tune only what matters.">
             <div className="space-y-4">
               <div className="space-y-3">

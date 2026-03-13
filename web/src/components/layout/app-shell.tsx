@@ -12,7 +12,7 @@ const navItems = [
   { to: '/training', label: 'Train', hint: 'Sets, sessions, and overload' },
   { to: '/weight', label: 'Weight', hint: 'Fast weigh-ins and trends' },
   { to: '/templates', label: 'Templates', hint: 'Repeat what you use often' },
-  { to: '/insights', label: 'Coach', hint: 'Signals and recommendations' },
+  { to: '/coach', label: 'Coach', hint: 'Signals, check-ins, and proactive guidance' },
   { to: '/settings', label: 'Settings', hint: 'AI control, keys, and runtime' },
 ] as const
 
@@ -118,7 +118,7 @@ export function AppShell() {
   const [syncState, setSyncState] = useState(getSyncState)
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession, retry: false })
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  const currentItem = useMemo(() => navItems.find((item) => item.to === pathname) ?? navItems[0], [pathname])
+  const currentItem = useMemo(() => navItems.find((item) => item.to === pathname || (pathname === '/insights' && item.to === '/coach')) ?? navItems[0], [pathname])
   const sessionUser = sessionQuery.data?.user
   const isSetupRoute = pathname === '/setup-password'
   const logout = useMutation({
@@ -206,7 +206,7 @@ export function AppShell() {
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{currentItem.hint}</p>
                   <div className="mt-3 inline-flex rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600">
                     {syncState.isOnline ? 'Online' : 'Offline'}
-                    {syncState.queuedCount ? ` · ${syncState.queuedCount} queued` : ''}
+                    {syncState.queuedCount ? ` | ${syncState.queuedCount} queued` : ''}
                   </div>
                 </div>
                 <div className="flex items-start gap-3">

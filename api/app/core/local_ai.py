@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from base64 import b64encode
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 import json
 import re
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from sqlalchemy import select
@@ -15,7 +17,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.config_crypto import decrypt_secret_payload, encrypt_secret_payload
-from app.core.models import AiFeatureBinding, AiPersonaConfig, AiProfile, CoachBrief, Goal, InsightSnapshot, MealEntry, WeightEntry, WorkoutSession, utcnow
+from app.core.logic import ProgressionContext, SetPerformance, recommend_progression
+from app.core.models import AiFeatureBinding, AiPersonaConfig, AiProfile, CoachBrief, CoachCheckIn, Exercise, Goal, InsightSnapshot, MealEntry, SetEntry, UserPreference, WeightEntry, WorkoutSession, utcnow
 from app.core.storage import ensure_managed_upload_path
 
 
@@ -26,12 +29,14 @@ AI_FEATURE_KEYS = (
     "nutrition_label_scan",
     "assistant_quick_capture",
     "coach_brief",
+    "coach_advice",
 )
 DEFAULT_FEATURE_SETTINGS: dict[str, dict[str, Any]] = {
     "meal_photo_estimation": {"temperature": 0.2},
     "nutrition_label_scan": {"temperature": 0.1},
     "assistant_quick_capture": {"temperature": 0.15},
     "coach_brief": {"temperature": 0.65, "max_output_tokens": 700},
+    "coach_advice": {"temperature": 0.55, "max_output_tokens": 900},
 }
 DEFAULT_PERSONA = {
     "display_name": "FitnessPal Coach",
@@ -908,6 +913,16 @@ def resolve_feature(session: Session, feature_key: str) -> ResolvedAiFeature:
     )
 
 
+def resolve_coach_advice_feature(session: Session) -> ResolvedAiFeature:
+    resolved = resolve_feature(session, "coach_advice")
+    if resolved.profile and resolved.model:
+        return resolved
+    fallback = resolve_feature(session, "coach_brief")
+    if fallback.profile and fallback.model:
+        return fallback
+    return resolved
+
+
 def inspect_ai_runtime(session: Session, *, include_admin_details: bool = False) -> dict[str, Any]:
     ensure_ai_defaults(session)
     persona = serialize_persona_summary(get_persona_config(session))
@@ -1149,45 +1164,532 @@ def parse_natural_language_entry(session: Session, text: str) -> dict[str, Any]:
         return _heuristic_text_drafts(text)
 
 
-def _coach_brief_fallback(persona: AiPersonaConfig, payload: dict[str, Any]) -> dict[str, Any]:
-    recommendations = list(payload.get("recommendations") or [])
-    recovery_flags = list(payload.get("recovery_flags") or [])
-    nutrition = payload.get("nutrition", {})
-    training = payload.get("training", {})
-    body = payload.get("body", {})
+def _server_timezone():
+    return datetime.now().astimezone().tzinfo or timezone.utc
 
-    title = "Daily Brief"
-    if recovery_flags:
-        summary = f"{persona.display_name}: recovery is the watch item today. {recovery_flags[0]}"
-    elif recommendations:
-        summary = f"{persona.display_name}: primary move today is to {recommendations[0][0].lower() + recommendations[0][1:]}"
+
+def resolve_user_timezone(session: Session, user_id: str):
+    preference = session.scalar(select(UserPreference).where(UserPreference.user_id == user_id))
+    if preference and preference.timezone:
+        try:
+            timezone_info = ZoneInfo(preference.timezone)
+            return timezone_info, preference.timezone
+        except ZoneInfoNotFoundError:
+            pass
+    timezone_info = _server_timezone()
+    return timezone_info, getattr(timezone_info, "key", None) or str(timezone_info)
+
+
+def _user_local_now(session: Session, user_id: str) -> tuple[datetime, str]:
+    timezone_info, timezone_name = resolve_user_timezone(session, user_id)
+    return utcnow().astimezone(timezone_info), timezone_name
+
+
+def get_today_or_latest_check_in(session: Session, user_id: str) -> CoachCheckIn | None:
+    local_now, _ = _user_local_now(session, user_id)
+    today_row = session.scalar(
+        select(CoachCheckIn)
+        .where(CoachCheckIn.user_id == user_id, CoachCheckIn.check_in_date == local_now.date())
+        .order_by(CoachCheckIn.updated_at.desc())
+        .limit(1)
+    )
+    if today_row:
+        return today_row
+    return session.scalar(
+        select(CoachCheckIn)
+        .where(CoachCheckIn.user_id == user_id)
+        .order_by(CoachCheckIn.check_in_date.desc(), CoachCheckIn.updated_at.desc())
+        .limit(1)
+    )
+
+
+def serialize_coach_check_in(row: CoachCheckIn, timezone_name: str, *, today_date: Any | None = None) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "check_in_date": row.check_in_date.isoformat(),
+        "sleep_hours": row.sleep_hours,
+        "readiness_1_5": row.readiness_1_5,
+        "soreness_1_5": row.soreness_1_5,
+        "hunger_1_5": row.hunger_1_5,
+        "note": row.note,
+        "timezone": timezone_name,
+        "is_today": bool(today_date and row.check_in_date == today_date),
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def upsert_coach_check_in(
+    session: Session,
+    user_id: str,
+    *,
+    sleep_hours: float | None = None,
+    readiness_1_5: int | None = None,
+    soreness_1_5: int | None = None,
+    hunger_1_5: int | None = None,
+    note: str | None = None,
+) -> CoachCheckIn:
+    local_now, _ = _user_local_now(session, user_id)
+    row = session.scalar(
+        select(CoachCheckIn)
+        .where(CoachCheckIn.user_id == user_id, CoachCheckIn.check_in_date == local_now.date())
+        .limit(1)
+    )
+    if not row:
+        row = CoachCheckIn(user_id=user_id, check_in_date=local_now.date())
+        session.add(row)
+
+    row.sleep_hours = sleep_hours
+    row.readiness_1_5 = readiness_1_5
+    row.soreness_1_5 = soreness_1_5
+    row.hunger_1_5 = hunger_1_5
+    row.note = note.strip() if note and note.strip() else None
+    session.flush()
+    return row
+
+
+def _dedupe_text(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        text = item.strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _serialize_datetime(value: Any) -> str | None:
+    return value.isoformat() if getattr(value, "isoformat", None) else None
+
+
+def _local_date(value: Any, timezone_info: Any):
+    return value.astimezone(timezone_info).date() if getattr(value, "astimezone", None) else None
+
+
+def _days_since(value: Any, local_now: datetime, timezone_info: Any) -> int | None:
+    local_value = _local_date(value, timezone_info)
+    if local_value is None:
+        return None
+    return max((local_now.date() - local_value).days, 0)
+
+
+def _round_number(value: Any, digits: int = 1) -> float | int:
+    if value in ("", None):
+        return 0 if digits == 0 else 0.0
+    rounded = round(float(value), digits)
+    return int(rounded) if digits == 0 else rounded
+
+
+def _stalled_exercises(session: Session, user_id: str, *, limit: int = 2) -> list[dict[str, Any]]:
+    exercises = session.scalars(
+        select(Exercise)
+        .where(Exercise.user_id == user_id, Exercise.deleted_at.is_(None))
+        .order_by(Exercise.updated_at.desc())
+        .limit(10)
+    ).all()
+    stalled: list[dict[str, Any]] = []
+    for exercise in exercises:
+        recent_sets = session.scalars(
+            select(SetEntry)
+            .where(
+                SetEntry.user_id == user_id,
+                SetEntry.exercise_id == exercise.id,
+                SetEntry.is_warmup.is_(False),
+            )
+            .order_by(SetEntry.created_at.desc())
+            .limit(6)
+        ).all()
+        if len(recent_sets) < 3:
+            continue
+        recommendation = recommend_progression(
+            ProgressionContext(
+                rep_target_min=exercise.rep_target_min,
+                rep_target_max=exercise.rep_target_max,
+                load_increment=exercise.load_increment,
+                recent_sets=[
+                    SetPerformance(reps=item.reps, load_kg=item.load_kg, rir=item.rir, completed_at=item.created_at)
+                    for item in reversed(recent_sets)
+                ],
+            )
+        )
+        if recommendation["recommendation"] not in {"hold", "deload"}:
+            continue
+        stalled.append(
+            {
+                "exercise_id": exercise.id,
+                "exercise_name": exercise.name,
+                "recommendation": recommendation["recommendation"],
+                "reason": recommendation["reason"],
+                "next_load_kg": recommendation["next_load_kg"],
+            }
+        )
+        if len(stalled) >= limit:
+            break
+    return stalled
+
+
+def _coach_freshness(
+    session: Session,
+    user_id: str,
+    *,
+    last_meal: MealEntry | None,
+    last_workout: WorkoutSession | None,
+    last_weight: WeightEntry | None,
+    latest_check_in: CoachCheckIn | None,
+) -> dict[str, Any]:
+    local_now, timezone_name = _user_local_now(session, user_id)
+    timezone_info, _ = resolve_user_timezone(session, user_id)
+    stale_signals: list[str] = []
+    meals_logged_today = bool(last_meal and _local_date(last_meal.logged_at, timezone_info) == local_now.date())
+    weight_logged_today = bool(last_weight and _local_date(last_weight.logged_at, timezone_info) == local_now.date())
+    check_in_completed_today = bool(latest_check_in and latest_check_in.check_in_date == local_now.date())
+    workout_logged_last_72h = bool(last_workout and (local_now - last_workout.started_at.astimezone(timezone_info)).total_seconds() <= 72 * 3600)
+
+    if local_now.hour >= 13 and not meals_logged_today:
+        stale_signals.append("No meals logged yet today.")
+    if local_now.hour >= 10 and not weight_logged_today:
+        stale_signals.append("No weigh-in logged today.")
+    if local_now.hour >= 9 and not check_in_completed_today:
+        stale_signals.append("Daily check-in still missing.")
+    if not workout_logged_last_72h:
+        stale_signals.append("No workout logged in the last 72 hours.")
+
+    return {
+        "timezone": timezone_name,
+        "local_date": local_now.date().isoformat(),
+        "last_meal_at": _serialize_datetime(last_meal.logged_at if last_meal else None),
+        "last_workout_at": _serialize_datetime(last_workout.started_at if last_workout else None),
+        "last_weight_at": _serialize_datetime(last_weight.logged_at if last_weight else None),
+        "last_check_in_at": _serialize_datetime(latest_check_in.updated_at if latest_check_in else None),
+        "meals_logged_today": meals_logged_today,
+        "weight_logged_today": weight_logged_today,
+        "check_in_completed_today": check_in_completed_today,
+        "workout_logged_last_72h": workout_logged_last_72h,
+        "stale_signals": stale_signals,
+    }
+
+
+def build_deterministic_coach_state(session: Session, user_id: str, insight_payload: dict[str, Any]) -> dict[str, Any]:
+    timezone_info, timezone_name = resolve_user_timezone(session, user_id)
+    local_now = utcnow().astimezone(timezone_info)
+    today = local_now.date()
+
+    recent_meals = session.scalars(
+        select(MealEntry)
+        .where(MealEntry.user_id == user_id, MealEntry.deleted_at.is_(None))
+        .order_by(MealEntry.logged_at.desc())
+        .limit(24)
+    ).all()
+    recent_workouts = session.scalars(
+        select(WorkoutSession)
+        .where(WorkoutSession.user_id == user_id, WorkoutSession.deleted_at.is_(None))
+        .order_by(WorkoutSession.started_at.desc())
+        .limit(8)
+    ).all()
+    recent_weights = session.scalars(
+        select(WeightEntry)
+        .where(WeightEntry.user_id == user_id, WeightEntry.deleted_at.is_(None))
+        .order_by(WeightEntry.logged_at.desc())
+        .limit(10)
+    ).all()
+
+    latest_check_in = get_today_or_latest_check_in(session, user_id)
+    serialized_check_in = serialize_coach_check_in(latest_check_in, timezone_name, today_date=today) if latest_check_in else None
+    last_meal = recent_meals[0] if recent_meals else None
+    last_workout = recent_workouts[0] if recent_workouts else None
+    last_weight = recent_weights[0] if recent_weights else None
+    freshness = _coach_freshness(
+        session,
+        user_id,
+        last_meal=last_meal,
+        last_workout=last_workout,
+        last_weight=last_weight,
+        latest_check_in=latest_check_in,
+    )
+
+    today_meals = [row for row in recent_meals if _local_date(row.logged_at, timezone_info) == today]
+    today_calories = sum(row.total_calories for row in today_meals)
+    today_protein = sum(row.total_protein_g for row in today_meals)
+    latest_weight_value = insight_payload.get("body", {}).get("latest_weight_kg")
+    protein_target = max(round((latest_weight_value or 82) * 1.8), 140)
+    stalled_exercises = _stalled_exercises(session, user_id)
+
+    actions: list[str] = list(_string_list(insight_payload.get("recommendations")))
+    watchouts: list[str] = list(_string_list(insight_payload.get("recovery_flags")))
+    nudges: list[dict[str, Any]] = []
+
+    if local_now.hour >= 9 and not freshness["check_in_completed_today"]:
+        actions.insert(0, "Complete the daily check-in so the coach can tailor today's read.")
+        nudges.append(
+            {
+                "id": "coach-check-in",
+                "surface": "coach",
+                "title": "Finish today's check-in",
+                "body": "A 20-second recovery check gives the coach better context before your next nutrition or training call.",
+                "tone": "warning",
+                "route": "/coach",
+                "cta_label": "Open check-in",
+            }
+        )
+
+    if local_now.hour >= 13 and not freshness["meals_logged_today"]:
+        actions.insert(0, "Log the next meal now so calorie and protein calls stay grounded.")
+        nudges.append(
+            {
+                "id": "nutrition-log-next-meal",
+                "surface": "nutrition",
+                "title": "No meals logged yet today",
+                "body": "Get the next meal in first. The coach can only sharpen calories and protein when today's intake is visible.",
+                "tone": "warning",
+                "route": "/nutrition",
+                "cta_label": "Log food",
+            }
+        )
+    elif local_now.hour >= 15 and today_protein < protein_target * 0.45:
+        actions.insert(0, f"Front-load protein over the next meal or two to move toward roughly {protein_target} g today.")
+        nudges.append(
+            {
+                "id": "nutrition-protein-push",
+                "surface": "nutrition",
+                "title": "Protein is still light",
+                "body": f"Today's logged protein is about {round(today_protein)} g. Bring the next meals closer to roughly {protein_target} g total for the day.",
+                "tone": "info",
+                "route": "/nutrition",
+                "cta_label": "Log a protein meal",
+            }
+        )
     else:
-        summary = f"{persona.display_name}: no major warnings. Keep stacking consistent entries."
+        nudges.append(
+            {
+                "id": "nutrition-photo-shortcut",
+                "surface": "nutrition",
+                "title": "Use the meal photo shortcut when speed wins",
+                "body": "If you already ate, snap the plate and review the draft instead of skipping the log.",
+                "tone": "positive",
+                "route": "/nutrition",
+                "cta_label": "Open meal photo",
+            }
+        )
 
-    actions = recommendations[:3] or [
+    if latest_check_in and latest_check_in.sleep_hours is not None and latest_check_in.sleep_hours < 6.5:
+        watchouts.insert(0, "Sleep came in light. Keep today's training and calorie decisions more conservative than ego wants.")
+    if latest_check_in and latest_check_in.readiness_1_5 is not None and latest_check_in.readiness_1_5 <= 2:
+        watchouts.insert(0, "Readiness is low today. Prioritize clean execution over chasing load.")
+    if latest_check_in and latest_check_in.soreness_1_5 is not None and latest_check_in.soreness_1_5 >= 4:
+        watchouts.insert(0, "Soreness is elevated. Use longer warm-ups and hold back from forced progression.")
+
+    if last_workout:
+        days_since_last_workout = _days_since(last_workout.started_at, local_now, timezone_info) or 0
+        if latest_check_in and latest_check_in.readiness_1_5 is not None and latest_check_in.readiness_1_5 <= 2:
+            nudges.append(
+                {
+                    "id": "training-primer-recovery",
+                    "surface": "training",
+                    "title": "Treat the next session like a precision day",
+                    "body": "Keep the first compound lift at last week's load, own cleaner reps, and leave a little in reserve.",
+                    "tone": "warning",
+                    "route": "/training",
+                    "cta_label": "Open training",
+                }
+            )
+        else:
+            nudges.append(
+                {
+                    "id": "training-repeat-session",
+                    "surface": "training",
+                    "title": "Repeat the last session with cleaner execution",
+                    "body": (
+                        f"Your last workout was {days_since_last_workout} day(s) ago. Use it as the template and beat it with steadier reps before adding load."
+                    ),
+                    "tone": "positive",
+                    "route": "/training",
+                    "cta_label": "Log workout",
+                }
+            )
+
+    if stalled_exercises:
+        stalled_names = ", ".join(item["exercise_name"] for item in stalled_exercises)
+        actions.insert(0, f"Use the next session to own rep quality on {stalled_names} before forcing more load.")
+        nudges.append(
+            {
+                "id": "training-stalled-lifts",
+                "surface": "training",
+                "title": "A lift is asking for patience, not panic",
+                "body": stalled_exercises[0]["reason"],
+                "tone": "info",
+                "route": "/training",
+                "cta_label": "Review progression",
+            }
+        )
+
+    weight_trend = float(insight_payload.get("body", {}).get("weight_trend_kg_per_week") or 0)
+    if local_now.hour >= 10 and not freshness["weight_logged_today"]:
+        actions.insert(0, "Grab a weigh-in under normal conditions so the trend stays trustworthy.")
+        nudges.append(
+            {
+                "id": "weight-log-today",
+                "surface": "weight",
+                "title": "Today's weigh-in is still missing",
+                "body": "One consistent morning weigh-in is more useful than a week of guesswork when calories need adjusting.",
+                "tone": "warning",
+                "route": "/weight",
+                "cta_label": "Log weight",
+            }
+        )
+    if weight_trend >= 0.35:
+        nudges.append(
+            {
+                "id": "weight-gaining-fast",
+                "surface": "weight",
+                "title": "Rate of gain is moving quickly",
+                "body": f"Trend is roughly +{weight_trend:.2f} kg per week. Check that this pace still matches the current goal before pushing calories higher.",
+                "tone": "info",
+                "route": "/weight",
+                "cta_label": "Review trend",
+            }
+        )
+    elif weight_trend <= -0.35:
+        nudges.append(
+            {
+                "id": "weight-dropping-fast",
+                "surface": "weight",
+                "title": "Rate of loss is moving quickly",
+                "body": f"Trend is roughly {weight_trend:.2f} kg per week. Keep an eye on recovery and performance before digging the deficit deeper.",
+                "tone": "warning",
+                "route": "/weight",
+                "cta_label": "Review trend",
+            }
+        )
+
+    if watchouts:
+        top_focus = {
+            "title": "Protect recovery and keep execution boring",
+            "summary": watchouts[0],
+            "route": "/coach",
+            "cta_label": "Open coach board",
+        }
+    elif local_now.hour >= 13 and not freshness["meals_logged_today"]:
+        top_focus = {
+            "title": "Get today's nutrition visible",
+            "summary": "Log the next meal now so calories and protein calls stop relying on yesterday's data.",
+            "route": "/nutrition",
+            "cta_label": "Log food",
+        }
+    elif local_now.hour >= 10 and not freshness["weight_logged_today"]:
+        top_focus = {
+            "title": "Lock in today's weigh-in",
+            "summary": "One clean weigh-in keeps the trend honest and prevents random calorie changes.",
+            "route": "/weight",
+            "cta_label": "Log weight",
+        }
+    elif stalled_exercises:
+        top_focus = {
+            "title": f"Win back momentum on {stalled_exercises[0]['exercise_name']}",
+            "summary": stalled_exercises[0]["reason"],
+            "route": "/training",
+            "cta_label": "Open training",
+        }
+    else:
+        top_focus = {
+            "title": "Stay ahead of the easy wins",
+            "summary": "Keep logging tight, hit protein earlier, and make the next session look cleaner than the last one.",
+            "route": "/coach",
+            "cta_label": "Open coach board",
+        }
+
+    quick_prompts = [
+        "What should I focus on over the next 3 days based on my current logs?",
+        "Give me a pre-workout primer before my next session.",
+        "How should I adjust calories or training based on my weight trend?",
+    ]
+    if stalled_exercises:
+        quick_prompts.append(f"What is the smartest way to move {stalled_exercises[0]['exercise_name']} forward again?")
+    if latest_check_in and latest_check_in.readiness_1_5 is not None and latest_check_in.readiness_1_5 <= 2:
+        quick_prompts.append("How should I handle a low-readiness day without wasting the session?")
+
+    stats = _coach_stats_from_payload(insight_payload)
+    stats["today_calories"] = round(today_calories)
+    stats["today_protein_g"] = round(today_protein)
+    stats["protein_target_g"] = protein_target
+
+    return {
+        "generated_at": utcnow().isoformat(),
+        "freshness": freshness,
+        "top_focus": top_focus,
+        "actions": _dedupe_text(actions)[:4],
+        "watchouts": _dedupe_text(watchouts)[:4],
+        "nudges": nudges,
+        "quick_prompts": _dedupe_text(quick_prompts)[:5],
+        "stats": stats,
+        "today_check_in": serialized_check_in,
+        "stalled_exercises": stalled_exercises,
+    }
+
+
+def ensure_current_coach_brief(session: Session, user_id: str, snapshot: InsightSnapshot | None) -> CoachBrief | None:
+    row = get_latest_coach_brief(session, user_id)
+    if snapshot and (not row or row.insight_snapshot_id != snapshot.id):
+        row = refresh_coach_brief(session, user_id, snapshot)
+    return row
+
+
+def build_assistant_feed(
+    session: Session,
+    user_id: str,
+    *,
+    insight_payload: dict[str, Any],
+    snapshot: InsightSnapshot | None = None,
+) -> dict[str, Any]:
+    state = build_deterministic_coach_state(session, user_id, insight_payload)
+    persona = get_persona_config(session)
+    brief_row = ensure_current_coach_brief(session, user_id, snapshot)
+    brief = serialize_coach_brief(brief_row, persona) if brief_row else None
+    return {
+        "generated_at": state["generated_at"],
+        "source": brief["source"] if brief else "deterministic",
+        "freshness": state["freshness"],
+        "top_focus": state["top_focus"],
+        "actions": state["actions"],
+        "watchouts": state["watchouts"],
+        "nudges": state["nudges"],
+        "quick_prompts": state["quick_prompts"],
+        "stats": state["stats"],
+        "brief": brief,
+        "today_check_in": state["today_check_in"],
+    }
+
+
+def _coach_brief_fallback(session: Session, user_id: str, persona: AiPersonaConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    coach_state = build_deterministic_coach_state(session, user_id, payload)
+    top_focus = coach_state["top_focus"]
+    watchouts = coach_state["watchouts"]
+    actions = coach_state["actions"] or [
         "Log your next meal and workout so the coach can tighten tomorrow's read.",
         "Keep entries honest and fast; the coach works best when the data is fresh.",
     ]
-    body_markdown = (
-        f"**{persona.display_name} says:** {summary}\n\n"
-        f"- Avg calories (7d): {round(nutrition.get('average_calories_7') or 0)}\n"
-        f"- Weekly volume: {round(training.get('weekly_volume_kg') or 0)} kg\n"
-        f"- Weight trend: {body.get('weight_trend_kg_per_week') or 0:.2f} kg/week"
-    )
+    body_lines = [
+        f"**{persona.display_name} says:** {top_focus['summary']}",
+        "",
+        f"- Avg calories (7d): {round(payload.get('nutrition', {}).get('average_calories_7') or 0)}",
+        f"- Weekly volume: {round(payload.get('training', {}).get('weekly_volume_kg') or 0)} kg",
+        f"- Weight trend: {payload.get('body', {}).get('weight_trend_kg_per_week') or 0:.2f} kg/week",
+    ]
+    if watchouts:
+        body_lines.extend(["", f"- Watch item: {watchouts[0]}"])
     return {
         "source": "deterministic",
         "provider": None,
         "model_name": None,
-        "title": title,
-        "summary": summary,
-        "body_markdown": body_markdown,
+        "title": "Daily Brief",
+        "summary": top_focus["summary"],
+        "body_markdown": "\n".join(body_lines),
         "actions_json": actions,
-        "stats_json": {
-            "average_calories_7": round(nutrition.get("average_calories_7") or 0),
-            "weekly_volume_kg": round(training.get("weekly_volume_kg") or 0),
-            "weight_trend_kg_per_week": round(body.get("weight_trend_kg_per_week") or 0, 2),
-            "pr_count": training.get("pr_count") or 0,
-        },
+        "stats_json": coach_state["stats"],
         "error_message": None,
     }
 
@@ -1285,6 +1787,7 @@ def _serialize_goal_context(rows: list[Goal]) -> list[dict[str, Any]]:
 
 
 def _load_coach_context(session: Session, user_id: str, insight_payload: dict[str, Any]) -> dict[str, Any]:
+    coach_state = build_deterministic_coach_state(session, user_id, insight_payload)
     recent_meals = session.scalars(
         select(MealEntry).where(MealEntry.user_id == user_id, MealEntry.deleted_at.is_(None)).order_by(MealEntry.logged_at.desc()).limit(5)
     ).all()
@@ -1311,6 +1814,16 @@ def _load_coach_context(session: Session, user_id: str, insight_payload: dict[st
         "recent_workouts": _serialize_recent_workout_context(recent_workouts),
         "recent_weights": _serialize_recent_weight_context(recent_weights),
         "goals": _serialize_goal_context(active_goals),
+        "freshness": coach_state["freshness"],
+        "today_check_in": coach_state["today_check_in"],
+        "coach_state": {
+            "top_focus": coach_state["top_focus"],
+            "actions": coach_state["actions"],
+            "watchouts": coach_state["watchouts"],
+            "nudges": coach_state["nudges"],
+            "quick_prompts": coach_state["quick_prompts"],
+        },
+        "stalled_exercises": coach_state["stalled_exercises"],
     }
 
 
@@ -1376,25 +1889,20 @@ def generate_coach_brief(session: Session, user_id: str, insight_payload: dict[s
             "error_message": None,
         }
     except Exception:
-        return _coach_brief_fallback(persona, insight_payload)
+        return _coach_brief_fallback(session, user_id, persona, insight_payload)
 
 
-def _coach_advice_fallback(persona: AiPersonaConfig, athlete_request: str, payload: dict[str, Any]) -> dict[str, Any]:
-    recommendations = _string_list(payload.get("recommendations"))
-    recovery_flags = _string_list(payload.get("recovery_flags"))
-    focus_area = "Recovery management" if recovery_flags else ("Primary lever" if recommendations else "Consistency")
-    primary_take = recovery_flags[0] if recovery_flags else (
-        recommendations[0] if recommendations else "stay consistent with logging, meals, and the next planned session"
-    )
-    actions = recommendations[:3] or [
+def _coach_advice_fallback(session: Session, user_id: str, persona: AiPersonaConfig, athlete_request: str, payload: dict[str, Any]) -> dict[str, Any]:
+    coach_state = build_deterministic_coach_state(session, user_id, payload)
+    watchouts = coach_state["watchouts"]
+    actions = coach_state["actions"] or [
         "Keep the next meal high in protein and close to your normal calorie target.",
         "Make the next workout technically clean before adding more load.",
         "Log the next weigh-in under the same conditions so the trend stays useful.",
     ]
-    watchouts = recovery_flags[:3]
     follow_up_prompt = (
         "How did your last training session feel for energy, pumps, and recovery?"
-        if recovery_flags
+        if watchouts
         else "Which part of the day is hardest for you to stay on plan with right now?"
     )
     return {
@@ -1403,17 +1911,17 @@ def _coach_advice_fallback(persona: AiPersonaConfig, athlete_request: str, paylo
         "model_name": None,
         "question": athlete_request.strip(),
         "title": "Coach answer",
-        "summary": f"{persona.display_name}: the main focus right now is to {primary_take[0].lower() + primary_take[1:] if primary_take else 'stay steady.'}",
+        "summary": f"{persona.display_name}: {coach_state['top_focus']['summary']}",
         "body_markdown": (
             f"Question: {athlete_request.strip()}\n\n"
-            f"Based on the current logs, the clearest coaching priority is to {primary_take[0].lower() + primary_take[1:] if primary_take else 'stay consistent.'} "
+            f"Based on the current logs, the clearest coaching priority is to {coach_state['top_focus']['summary'][0].lower() + coach_state['top_focus']['summary'][1:] if coach_state['top_focus']['summary'] else 'stay consistent.'} "
             "Treat the next 24 to 72 hours as an execution block instead of chasing random changes."
         ),
         "actions": actions,
-        "watchouts": watchouts,
-        "focus_area": focus_area,
+        "watchouts": watchouts[:3],
+        "focus_area": coach_state["top_focus"]["title"],
         "follow_up_prompt": follow_up_prompt,
-        "stats": _coach_stats_from_payload(payload),
+        "stats": coach_state["stats"],
         "generated_at": utcnow().isoformat(),
     }
 
@@ -1424,7 +1932,7 @@ def generate_coach_advice(session: Session, user_id: str, insight_payload: dict[
     context = _load_coach_context(session, user_id, insight_payload)
 
     try:
-        resolved = resolve_feature(session, "coach_brief")
+        resolved = resolve_coach_advice_feature(session)
         parsed = _request_feature_json(
             resolved,
             system_prompt=(
@@ -1457,7 +1965,7 @@ def generate_coach_advice(session: Session, user_id: str, insight_payload: dict[
             "generated_at": utcnow().isoformat(),
         }
     except Exception:
-        return _coach_advice_fallback(persona, cleaned_request, insight_payload)
+        return _coach_advice_fallback(session, user_id, persona, cleaned_request, insight_payload)
 
 
 def get_latest_coach_brief(session: Session, user_id: str) -> CoachBrief | None:

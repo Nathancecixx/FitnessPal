@@ -473,6 +473,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant/feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Assistant Feed */
+        get: operations["get_assistant_feed_api_v1_assistant_feed_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/feed/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh Assistant Feed */
+        post: operations["refresh_assistant_feed_api_v1_assistant_feed_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/check-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Assistant Check In */
+        get: operations["get_assistant_check_in_api_v1_assistant_check_in_get"];
+        /** Update Assistant Check In */
+        put: operations["update_assistant_check_in_api_v1_assistant_check_in_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistant/brief": {
         parameters: {
             query?: never;
@@ -1175,6 +1227,19 @@ export interface components {
             /** Scopes */
             scopes?: string[];
         };
+        /** AssistantCheckInUpdate */
+        AssistantCheckInUpdate: {
+            /** Sleep Hours */
+            sleep_hours?: number | null;
+            /** Readiness 1 5 */
+            readiness_1_5?: number | null;
+            /** Soreness 1 5 */
+            soreness_1_5?: number | null;
+            /** Hunger 1 5 */
+            hunger_1_5?: number | null;
+            /** Note */
+            note?: string | null;
+        };
         /** AssistantCoachAdviceRequest */
         AssistantCoachAdviceRequest: {
             /** Prompt */
@@ -1582,12 +1647,10 @@ export interface components {
         };
         /** UserPreferencesUpdate */
         UserPreferencesUpdate: {
-            /**
-             * Weight Unit
-             * @default kg
-             * @enum {string}
-             */
-            weight_unit: "kg" | "lbs";
+            /** Weight Unit */
+            weight_unit?: ("kg" | "lbs") | null;
+            /** Timezone */
+            timezone?: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -3040,6 +3103,150 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AiPersonaUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_assistant_feed_api_v1_assistant_feed_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                fitnesspal_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_assistant_feed_api_v1_assistant_feed_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                fitnesspal_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_assistant_check_in_api_v1_assistant_check_in_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                fitnesspal_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_assistant_check_in_api_v1_assistant_check_in_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                fitnesspal_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantCheckInUpdate"];
             };
         };
         responses: {

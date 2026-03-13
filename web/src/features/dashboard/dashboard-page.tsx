@@ -41,7 +41,7 @@ export function DashboardPage() {
   const weightUnitLabel = getWeightUnitLabel(weightUnit)
   const dashboardQuery = useQuery({ queryKey: ['dashboard'], queryFn: api.getDashboard })
   const insightsQuery = useQuery({ queryKey: ['insights-summary'], queryFn: () => api.getInsightSummary(90) })
-  const briefQuery = useQuery({ queryKey: ['assistant-brief'], queryFn: api.getAssistantBrief, retry: false })
+  const feedQuery = useQuery({ queryKey: ['assistant-feed'], queryFn: api.getAssistantFeed, retry: false })
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
   const [assistantNote, setAssistantNote] = useState(() => buildDefaultAssistantNote(weightUnit))
   const [assistantResult, setAssistantResult] = useState<Awaited<ReturnType<typeof api.parseAssistantNote>> | null>(null)
@@ -70,7 +70,8 @@ export function DashboardPage() {
     return card
   })
   const insights = insightsQuery.data?.summary
-  const brief = briefQuery.data?.brief
+  const feed = feedQuery.data?.feed
+  const brief = feed?.brief
   const calorieSeries = Object.values(insights?.nutrition.daily_calories ?? {}).slice(-7)
   const weightSeries = (insights?.body.trend_7 ?? []).map((value) => convertMassFromKg(value, weightUnit))
 
@@ -79,10 +80,11 @@ export function DashboardPage() {
     onSuccess: (result) => setAssistantResult(result),
   })
 
-  const refreshBrief = useMutation({
-    mutationFn: api.refreshAssistantBrief,
+  const refreshFeed = useMutation({
+    mutationFn: api.refreshAssistantFeed,
     onSuccess: async () => {
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
         queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
         queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
@@ -147,6 +149,7 @@ export function DashboardPage() {
         queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
         queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
         queryClient.invalidateQueries({ queryKey: ['exercises'] }),
+        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
         queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
       ])
     },
@@ -228,20 +231,28 @@ export function DashboardPage() {
         </div>
 
         <Panel
-          title={brief?.title ?? 'Coach feed'}
+          title={feed?.top_focus.title ?? 'Coach preview'}
           subtitle={brief ? `${brief.persona_name} keeps the next useful move visible.` : 'Keep the next useful action visible without turning the app into homework.'}
           action={(
-            <ActionButton tone="secondary" className="w-auto" onClick={() => refreshBrief.mutate()} disabled={refreshBrief.isPending || !insights}>
-              {refreshBrief.isPending ? 'Refreshing...' : 'Refresh brief'}
+            <ActionButton tone="secondary" className="w-auto" onClick={() => refreshFeed.mutate()} disabled={refreshFeed.isPending || !insights}>
+              {refreshFeed.isPending ? 'Refreshing...' : 'Refresh coach'}
             </ActionButton>
           )}
         >
           <div className="space-y-3">
-            {brief ? (
+            {feed ? (
               <div className="rounded-[24px] bg-slate-950 px-4 py-4 text-canvas">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-amber-300/75">{brief.persona_name}</div>
-                <div className="mt-3 font-display text-2xl">{brief.summary}</div>
-                <div className="mt-2 text-sm leading-6 text-slate-300">{brief.persona_tagline}</div>
+                <div className="text-[11px] uppercase tracking-[0.24em] text-lime-300/75">Top focus</div>
+                <div className="mt-3 font-display text-2xl">{feed.top_focus.title}</div>
+                <div className="mt-2 text-sm leading-6 text-slate-300">{feed.top_focus.summary}</div>
+                <div className="mt-4">
+                  <Link
+                    to={feed.top_focus.route}
+                    className="inline-flex min-h-[42px] items-center rounded-full bg-lime px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-950"
+                  >
+                    {feed.top_focus.cta_label}
+                  </Link>
+                </div>
               </div>
             ) : null}
             {brief?.body_markdown ? (
@@ -249,29 +260,34 @@ export function DashboardPage() {
                 {formatCoachBody(brief.body_markdown)}
               </div>
             ) : null}
-            {(brief?.actions?.length ? brief.actions : (insights?.recommendations ?? []).slice(0, 4)).map((note) => (
+            {(feed?.actions?.length ? feed.actions : (insights?.recommendations ?? []).slice(0, 4)).slice(0, 2).map((note) => (
               <div key={note} className="rounded-[20px] bg-slate-950 px-4 py-3 text-sm leading-6 text-canvas">
                 {note}
               </div>
             ))}
-            {refreshBrief.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{refreshBrief.error.message}</div> : null}
-            {!brief && !insights?.recommendations?.length ? (
-              <EmptyState title="No recommendations yet" body="As soon as the app has enough meals, workouts, and weigh-ins it will start surfacing a branded coach brief here." />
+            {feed?.watchouts?.length ? (
+              <div className="app-status app-status-warning rounded-[20px] px-4 py-4 text-sm leading-6">
+                {feed.watchouts[0]}
+              </div>
+            ) : null}
+            {refreshFeed.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{refreshFeed.error.message}</div> : null}
+            {!feed && !insights?.recommendations?.length ? (
+              <EmptyState title="No recommendations yet" body="As soon as the app has enough meals, workouts, and weigh-ins it will start surfacing a proactive coach preview here." />
             ) : null}
           </div>
 
           <div className="mt-5 grid gap-3 rounded-[24px] bg-slate-100 p-4 sm:grid-cols-3">
             <div>
               <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Calories</div>
-              <div className="mt-2 font-display text-2xl">{brief?.stats.average_calories_7 ?? Math.round(insights?.nutrition.average_calories_7 ?? 0)}</div>
+              <div className="mt-2 font-display text-2xl">{feed?.stats.average_calories_7 ?? Math.round(insights?.nutrition.average_calories_7 ?? 0)}</div>
             </div>
             <div>
               <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Weekly volume</div>
-              <div className="mt-2 font-display text-2xl">{formatCoachMassStat(brief?.stats.weekly_volume_kg ?? Math.round(insights?.training.weekly_volume_kg ?? 0), (value) => formatMass(value, weightUnit, { decimals: 0 }))}</div>
+              <div className="mt-2 font-display text-2xl">{formatCoachMassStat(feed?.stats.weekly_volume_kg ?? Math.round(insights?.training.weekly_volume_kg ?? 0), (value) => formatMass(value, weightUnit, { decimals: 0 }))}</div>
             </div>
             <div>
               <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Weight trend</div>
-              <div className="mt-2 font-display text-2xl">{formatCoachMassStat(brief?.stats.weight_trend_kg_per_week ?? insights?.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit))}</div>
+              <div className="mt-2 font-display text-2xl">{formatCoachMassStat(feed?.stats.weight_trend_kg_per_week ?? insights?.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit))}</div>
             </div>
           </div>
         </Panel>

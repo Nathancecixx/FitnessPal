@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 import secrets
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -98,6 +98,7 @@ class UserPreference(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
     user_id: Mapped[str] = mapped_column(ForeignKey("app_users.id"), unique=True, index=True)
     weight_unit: Mapped[str] = mapped_column(String(8), default="kg")
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class AuditLog(Base):
@@ -440,6 +441,21 @@ class WeightEntry(OwnedMixin, TimestampMixin, SoftDeleteMixin, Base):
     body_fat_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     waist_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CoachCheckIn(OwnedMixin, TimestampMixin, Base):
+    __tablename__ = "coach_check_ins"
+    __table_args__ = (
+        UniqueConstraint("user_id", "check_in_date", name="uq_coach_check_ins_user_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    check_in_date: Mapped[date] = mapped_column(Date, index=True)
+    sleep_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    readiness_1_5: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    soreness_1_5: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hunger_1_5: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InsightSnapshot(OwnedMixin, TimestampMixin, Base):

@@ -11,11 +11,117 @@ function jsonRoute(route: Route, payload: JsonValue, status = 200) {
 }
 
 async function installBaseMocks(page: Page) {
+  const now = new Date().toISOString()
   await page.route('**/api/v1/auth/session', (route) => jsonRoute(route, {
     actor: { id: 'session-test', type: 'session', display_name: 'owner', scopes: ['*'] },
-    user: { id: 'user-test', username: 'owner', is_admin: true, is_active: true, has_password: true, created_at: new Date().toISOString() },
+    user: { id: 'user-test', username: 'owner', is_admin: true, is_active: true, has_password: true, created_at: now },
   }))
   await page.route('**/api/v1/dashboard', (route) => jsonRoute(route, { cards: [], available_modules: ['nutrition', 'training', 'metrics', 'insights'] }))
+  await page.route('**/api/v1/assistant/feed', (route) => jsonRoute(route, {
+    feed: {
+      generated_at: now,
+      source: 'deterministic',
+      freshness: {
+        timezone: 'America/Toronto',
+        local_date: '2026-03-12',
+        last_meal_at: now,
+        last_workout_at: now,
+        last_weight_at: now,
+        last_check_in_at: now,
+        meals_logged_today: true,
+        weight_logged_today: true,
+        check_in_completed_today: true,
+        workout_logged_last_72h: true,
+        stale_signals: [],
+      },
+      top_focus: {
+        title: 'Stay ahead of the easy wins',
+        summary: 'Keep logging tight, hit protein earlier, and make the next session look cleaner than the last one.',
+        route: '/coach',
+        cta_label: 'Open coach board',
+      },
+      actions: ['Hit protein early.', 'Repeat the last session with cleaner reps.'],
+      watchouts: [],
+      nudges: [
+        {
+          id: 'training-repeat-session',
+          surface: 'training',
+          title: 'Repeat the last session with cleaner execution',
+          body: 'Use the previous session as the template and beat it with steadier reps.',
+          tone: 'positive',
+          route: '/training',
+          cta_label: 'Log workout',
+        },
+      ],
+      quick_prompts: [
+        'What should I focus on over the next 3 days based on my current logs?',
+        'Give me a pre-workout primer before my next session.',
+      ],
+      stats: { average_calories_7: 2400, weekly_volume_kg: 5200, weight_trend_kg_per_week: -0.2, today_protein_g: 150, protein_target_g: 180 },
+      brief: {
+        id: 'brief-1',
+        status: 'ready',
+        source: 'deterministic',
+        title: 'Coach feed',
+        summary: 'Stay consistent.',
+        body_markdown: 'Keep protein high.',
+        actions: ['Hit protein early.'],
+        stats: { average_calories_7: 2400, weekly_volume_kg: 5200, weight_trend_kg_per_week: -0.2 },
+        persona_name: 'FitnessPal Coach',
+        persona_tagline: 'Clarity over noise.',
+        created_at: now,
+        updated_at: now,
+      },
+      today_check_in: {
+        id: 'check-in-1',
+        check_in_date: '2026-03-12',
+        sleep_hours: 7.5,
+        readiness_1_5: 4,
+        soreness_1_5: 2,
+        hunger_1_5: 3,
+        note: 'Ready to train.',
+        timezone: 'America/Toronto',
+        is_today: true,
+        created_at: now,
+        updated_at: now,
+      },
+    },
+  }))
+  await page.route('**/api/v1/assistant/feed/refresh', (route) => jsonRoute(route, { status: 'ok' }))
+  await page.route('**/api/v1/assistant/check-in', async (route) => {
+    if (route.request().method() === 'PUT') {
+      return jsonRoute(route, {
+        check_in: {
+          id: 'check-in-1',
+          check_in_date: '2026-03-12',
+          sleep_hours: 8,
+          readiness_1_5: 4,
+          soreness_1_5: 2,
+          hunger_1_5: 3,
+          note: 'Saved from test',
+          timezone: 'America/Toronto',
+          is_today: true,
+          created_at: now,
+          updated_at: now,
+        },
+      })
+    }
+    return jsonRoute(route, {
+      check_in: {
+        id: 'check-in-1',
+        check_in_date: '2026-03-12',
+        sleep_hours: 7.5,
+        readiness_1_5: 4,
+        soreness_1_5: 2,
+        hunger_1_5: 3,
+        note: 'Ready to train.',
+        timezone: 'America/Toronto',
+        is_today: true,
+        created_at: now,
+        updated_at: now,
+      },
+    })
+  })
   await page.route('**/api/v1/assistant/brief', (route) => jsonRoute(route, {
     brief: {
       id: 'brief-1',
@@ -165,4 +271,69 @@ test('training can launch a routine day and submit a session', async ({ page }) 
   await expect(page.getByText('Routine session: Upper / Lower')).toBeVisible()
   await page.getByRole('button', { name: 'Log workout' }).click()
   await expect.poll(() => createdSession).toBeTruthy()
+})
+
+test('coach hub shows the shared feed and saves a daily check-in', async ({ page }) => {
+  await installBaseMocks(page)
+  const now = new Date().toISOString()
+  let savedCheckIn = false
+  await page.route('**/api/v1/assistant/advice', (route) => jsonRoute(route, {
+    advice: {
+      source: 'deterministic',
+      question: 'Give me a pre-workout primer before my next session.',
+      title: 'Precision day',
+      summary: 'Keep load steady and own cleaner reps.',
+      body_markdown: 'Treat the next session like a precision day.',
+      actions: ['Repeat the last top set with cleaner reps.'],
+      watchouts: ['Do not turn one flat day into a program rewrite.'],
+      focus_area: 'Execution',
+      follow_up_prompt: 'How did the last working set feel?',
+      stats: { weekly_volume_kg: 5200 },
+      generated_at: new Date().toISOString(),
+    },
+  }))
+  await page.route('**/api/v1/assistant/check-in', async (route) => {
+    if (route.request().method() === 'PUT') {
+      savedCheckIn = true
+      return jsonRoute(route, {
+        check_in: {
+          id: 'check-in-1',
+          check_in_date: '2026-03-12',
+          sleep_hours: 8,
+          readiness_1_5: 4,
+          soreness_1_5: 2,
+          hunger_1_5: 3,
+          note: 'Saved from test',
+          timezone: 'America/Toronto',
+          is_today: true,
+          created_at: now,
+          updated_at: now,
+        },
+      })
+    }
+    return jsonRoute(route, {
+      check_in: {
+        id: 'check-in-1',
+        check_in_date: '2026-03-12',
+        sleep_hours: 7.5,
+        readiness_1_5: 4,
+        soreness_1_5: 2,
+        hunger_1_5: 3,
+        note: 'Ready to train.',
+        timezone: 'America/Toronto',
+        is_today: true,
+        created_at: now,
+        updated_at: now,
+      },
+    })
+  })
+
+  await page.goto('/coach')
+  await expect(page.getByRole('heading', { name: 'FitnessPal Coach' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Stay ahead of the easy wins' })).toBeVisible()
+
+  await page.getByLabel('Sleep hours').fill('8')
+  await page.getByLabel('Note').fill('Saved from test')
+  await page.getByRole('button', { name: 'Save check-in' }).click()
+  await expect.poll(() => savedCheckIn).toBeTruthy()
 })

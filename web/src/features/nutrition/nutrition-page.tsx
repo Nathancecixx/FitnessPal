@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import { CoachNudgePanel, filterCoachNudges } from '../../components/coach-panels'
 import { ActionButton, EmptyState, LabelledInput, LabelledSelect, PageIntro, Panel } from '../../components/ui'
 import { api, type FoodImportDraft, type MealEntry, type MealEntryItem, type MealPhotoDraft } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
@@ -49,6 +50,7 @@ function toEditableMealDraft(meal: MealEntry): EditableMealDraft {
 
 export function NutritionPage() {
   const [mealLimit, setMealLimit] = useState(10)
+  const feedQuery = useQuery({ queryKey: ['assistant-feed'], queryFn: api.getAssistantFeed, retry: false })
   const foodsQuery = useQuery({ queryKey: ['foods'], queryFn: () => api.listFoods({ limit: 100 }) })
   const recipesQuery = useQuery({ queryKey: ['recipes'], queryFn: api.listRecipes })
   const mealsQuery = useQuery({ queryKey: ['meals', mealLimit], queryFn: () => api.listMeals({ limit: mealLimit }) })
@@ -304,6 +306,7 @@ export function NutritionPage() {
   const favoriteFoods = useMemo(() => (foodsQuery.data?.items ?? []).slice(0, 6), [foodsQuery.data?.items])
   const repeatRecipes = useMemo(() => (recipesQuery.data?.items ?? []).slice(0, 3), [recipesQuery.data?.items])
   const repeatTemplates = useMemo(() => (templatesQuery.data?.items ?? []).slice(0, 3), [templatesQuery.data?.items])
+  const nutritionNudges = useMemo(() => filterCoachNudges(feedQuery.data?.feed.nudges, 'nutrition'), [feedQuery.data?.feed.nudges])
 
   function getPhotoEditorItems(draft: MealPhotoDraft): DraftEditorItem[] {
     return photoEditors[draft.id] ?? draft.candidates.map((item) => toDraftEditorItem(item))
@@ -357,6 +360,14 @@ export function NutritionPage() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <div className="space-y-4">
+          <CoachNudgePanel
+            title="Coach cues"
+            subtitle="Nutrition prompts stay close to the logging flow so the advice is easy to act on immediately."
+            nudges={nutritionNudges}
+            emptyTitle="No nutrition cues right now"
+            emptyBody="As soon as calorie timing, protein coverage, or stale food logging needs attention, the coach will surface it here."
+          />
+
           <Panel title="Fast meal log" subtitle="Manual macros for the days when speed matters more than perfect detail.">
             <form className="grid gap-3 sm:grid-cols-2" onSubmit={(event) => { event.preventDefault(); createQuickMeal.mutate() }}>
               <div className="sm:col-span-2"><LabelledInput label="Meal label" value={quickMeal.label} onChange={(value) => setQuickMeal((current) => ({ ...current, label: value }))} /></div>

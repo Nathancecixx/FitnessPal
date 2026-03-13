@@ -20,6 +20,7 @@ async function installSettingsMocks(page: Page) {
 
   await page.route('**/api/v1/preferences', (route) => jsonRoute(route, {
     weight_unit: 'kg',
+    timezone: 'America/Toronto',
   }))
 
   await page.route('**/api/v1/goals', (route) => jsonRoute(route, {
@@ -91,7 +92,7 @@ async function installSettingsMocks(page: Page) {
           advanced_settings_json: {},
         },
       ],
-      configured_feature_count: 3,
+      configured_feature_count: 5,
       legacy_mode: false,
       persona: {
         display_name: 'Coach Nova',
@@ -133,7 +134,7 @@ async function installSettingsMocks(page: Page) {
   await page.route('**/api/v1/ai/features', (route) => jsonRoute(route, {
     items: [
       {
-        feature_key: 'assistant.advice',
+        feature_key: 'assistant_quick_capture',
         profile_id: 'profile-1',
         profile: { id: 'profile-1', name: 'Local Coach' },
         model: 'llama3.2',
@@ -145,7 +146,19 @@ async function installSettingsMocks(page: Page) {
         uses_legacy_fallback: false,
       },
       {
-        feature_key: 'assistant.brief',
+        feature_key: 'coach_brief',
+        profile_id: 'profile-1',
+        profile: { id: 'profile-1', name: 'Local Coach' },
+        model: 'llama3.2',
+        temperature: 0.65,
+        top_p: 0.9,
+        max_output_tokens: 700,
+        system_prompt: null,
+        request_overrides_json: {},
+        uses_legacy_fallback: false,
+      },
+      {
+        feature_key: 'coach_advice',
         profile_id: '',
         profile: null,
         model: '',

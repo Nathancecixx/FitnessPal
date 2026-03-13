@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import { CoachNudgePanel, filterCoachNudges } from '../../components/coach-panels'
 import { EChart } from '../../components/charts/echart'
 import { ActionButton, DataList, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api } from '../../lib/api'
@@ -19,6 +20,7 @@ function describeWeeklyTrend(value: number) {
 export function WeightPage() {
   const weightUnit = useWeightUnit()
   const weightUnitLabel = getWeightUnitLabel(weightUnit)
+  const feedQuery = useQuery({ queryKey: ['assistant-feed'], queryFn: api.getAssistantFeed, retry: false })
   const [entryLimit, setEntryLimit] = useState(10)
   const entriesQuery = useQuery({ queryKey: ['weight-entries', entryLimit], queryFn: () => api.listWeightEntries({ limit: entryLimit }) })
   const trendsQuery = useQuery({ queryKey: ['weight-trends'], queryFn: () => api.getWeightTrends(180) })
@@ -86,6 +88,7 @@ export function WeightPage() {
       value: formatMassRate(trendsQuery.data?.weight_trend_kg_per_week ?? 0, weightUnit),
     },
   ], [latestEntry, latestTrendPoint, trendsQuery.data?.weight_trend_kg_per_week, weightUnit])
+  const weightNudges = useMemo(() => filterCoachNudges(feedQuery.data?.feed.nudges, 'weight'), [feedQuery.data?.feed.nudges])
 
   return (
     <div className="space-y-4">
@@ -97,6 +100,14 @@ export function WeightPage() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(320px,1.05fr)]">
         <div className="space-y-4">
+          <CoachNudgePanel
+            title="Coach cues"
+            subtitle="Use the coach read to keep the trend useful, not to react to every noisy weigh-in."
+            nudges={weightNudges}
+            emptyTitle="No weight cues right now"
+            emptyBody="As soon as the trend pace, missing weigh-ins, or rate-of-change calls for attention, the coach will show it here."
+          />
+
           <Panel title="Morning weigh-in" subtitle="Weight first. Everything else is optional.">
             <form
               className="space-y-4"

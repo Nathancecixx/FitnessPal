@@ -49,6 +49,13 @@ function countLabel(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`
 }
 
+function detectBrowserTimezone() {
+  if (typeof Intl === 'undefined') {
+    return 'UTC'
+  }
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+}
+
 function SectionHeading(props: { id: string; eyebrow: string; title: string; description: string }) {
   return (
     <div id={props.id} className="scroll-mt-28 px-1">
@@ -140,13 +147,15 @@ export function SettingsPage() {
   const [passwordDraft, setPasswordDraft] = useState({ current: '', next: '', confirm: '' })
   const [userDraft, setUserDraft] = useState({ username: '', isAdmin: false })
   const [weightUnitDraft, setWeightUnitDraft] = useState<'kg' | 'lbs'>('kg')
+  const [timezoneDraft, setTimezoneDraft] = useState(detectBrowserTimezone)
   const [setupResult, setSetupResult] = useState<UserSetupResponse | null>(null)
 
   useEffect(() => {
     if (preferencesQuery.data?.weight_unit) {
       setWeightUnitDraft(preferencesQuery.data.weight_unit)
     }
-  }, [preferencesQuery.data?.weight_unit])
+    setTimezoneDraft(preferencesQuery.data?.timezone ?? detectBrowserTimezone())
+  }, [preferencesQuery.data?.timezone, preferencesQuery.data?.weight_unit])
 
   const createGoal = useMutation({
     mutationFn: () => api.createGoal({
@@ -160,6 +169,8 @@ export function SettingsPage() {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['goals'] }),
+        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
         queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
@@ -207,6 +218,8 @@ export function SettingsPage() {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['goals'] }),
+        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
         queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
@@ -214,10 +227,14 @@ export function SettingsPage() {
   })
 
   const updatePreferences = useMutation({
-    mutationFn: () => api.updateUserPreferences({ weight_unit: weightUnitDraft }),
+    mutationFn: () => api.updateUserPreferences({ weight_unit: weightUnitDraft, timezone: timezoneDraft.trim() || null }),
     onSuccess: async (result) => {
       queryClient.setQueryData(['user-preferences'], result)
-      await queryClient.invalidateQueries({ queryKey: ['user-preferences'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['user-preferences'] }),
+        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      ])
     },
   })
 
@@ -264,7 +281,7 @@ export function SettingsPage() {
   const runningJobs = runtimeQuery.data?.jobs.running ?? jobsQuery.data?.items?.filter((job) => job.status === 'running').length ?? 0
   const passwordMismatch = Boolean(passwordDraft.next && passwordDraft.confirm && passwordDraft.next !== passwordDraft.confirm)
   const canSubmitPassword = Boolean(passwordDraft.current && passwordDraft.next.length >= 12 && passwordDraft.next === passwordDraft.confirm)
-  const hasUnsavedPreference = preferencesQuery.data?.weight_unit !== weightUnitDraft
+  const hasUnsavedPreference = preferencesQuery.data?.weight_unit !== weightUnitDraft || (preferencesQuery.data?.timezone ?? detectBrowserTimezone()) !== timezoneDraft
   const restoreTone = restoreExport.isError ? 'app-status-danger' : restoreExport.isSuccess ? 'app-status-success' : 'app-status-warning'
 
   const sectionLinks: SectionLink[] = [
@@ -296,7 +313,7 @@ export function SettingsPage() {
 
           <div className="grid gap-3 sm:grid-cols-2">
             <HeroMetric label="Account" value={sessionQuery.data?.user?.username ?? 'Local user'} detail={isAdmin ? 'Admin permissions are active for this session.' : 'Member-level controls are visible for this session.'} />
-            <HeroMetric label="Weight Unit" value={weightUnitDraft.toUpperCase()} detail={hasUnsavedPreference ? 'You have a unit change ready to save.' : 'Your measurement preference is already synced.'} />
+            <HeroMetric label="Units + TZ" value={`${weightUnitDraft.toUpperCase()} | ${timezoneDraft}`} detail={hasUnsavedPreference ? 'You have a preference change ready to save.' : 'Units and local-day timing are already synced.'} />
             <HeroMetric label="Coach Persona" value={runtimeQuery.data?.ai.persona.display_name ?? 'Coach'} detail={runtimeQuery.data ? `${runtimeQuery.data.ai.configured_feature_count} AI feature routes configured.` : 'Runtime details will appear once loaded.'} />
             <HeroMetric label="Jobs" value={`${queuedJobs}/${runningJobs}`} detail="Queued and running background work, surfaced early so maintenance feels less hidden." />
           </div>
@@ -309,7 +326,7 @@ export function SettingsPage() {
             <SectionHeading id="profile" eyebrow="Personal Setup" title="Preferences that affect everyday logging" description="Keep your core habits fast to adjust on a phone: one place for units and the goals that shape nutrition and bodyweight guidance." />
 
             <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-              <Panel title="Preferences" subtitle="Choose the units shown across weigh-ins, training loads, and summaries." action={<PanelBadge>{hasUnsavedPreference ? 'Unsaved changes' : `${weightUnitDraft.toUpperCase()} active`}</PanelBadge>}>
+              <Panel title="Preferences" subtitle="Choose the units and timezone used across weigh-ins, training loads, summaries, and coach timing." action={<PanelBadge>{hasUnsavedPreference ? 'Unsaved changes' : `${weightUnitDraft.toUpperCase()} active`}</PanelBadge>}>
                 <form
                   className="grid gap-4"
                   onSubmit={(event) => {
@@ -318,7 +335,7 @@ export function SettingsPage() {
                   }}
                 >
                   <div className="rounded-[22px] bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-                    Keep this aligned with how you think about your bodyweight and lifts so every screen reads naturally.
+                    Keep this aligned with how you think about your bodyweight and lifts so every screen reads naturally. The timezone also controls what counts as "today" for the coach and the morning refresh.
                   </div>
 
                   <LabelledSelect
@@ -330,6 +347,15 @@ export function SettingsPage() {
                       { label: 'Pounds (lbs)', value: 'lbs' },
                     ]}
                   />
+                  <LabelledInput
+                    label="Timezone"
+                    value={timezoneDraft}
+                    onChange={setTimezoneDraft}
+                    placeholder="America/Toronto"
+                  />
+                  <div className="rounded-[22px] bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
+                    Use an IANA timezone like <code>America/Toronto</code> or <code>America/New_York</code>. Browser default: <strong>{detectBrowserTimezone()}</strong>.
+                  </div>
 
                   {updatePreferences.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{updatePreferences.error.message}</div> : null}
                   {updatePreferences.isSuccess ? <div className="app-status app-status-success rounded-2xl px-4 py-3 text-sm">Preferences updated.</div> : null}

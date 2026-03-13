@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.models import AppUser, JobRecord, utcnow
+from app.core.models import AppUser, JobRecord, UserPreference, utcnow
 
 
 def enqueue_job(
@@ -74,24 +75,55 @@ def fail_job(session: Session, record: JobRecord, error: str) -> None:
     session.commit()
 
 
+def enqueue_live_insights_refresh(
+    session: Session,
+    user_id: str,
+    payload: dict[str, Any] | None = None,
+) -> JobRecord:
+    return enqueue_job(
+        session,
+        "insights.recompute",
+        user_id,
+        payload or {"source": "live", "user_id": user_id},
+        dedupe_key=f"insights-live:{user_id}:{utcnow().strftime('%Y%m%d%H%M')}",
+    )
+
+
+def _server_timezone():
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _resolve_user_timezone(session: Session, user_id: str):
+    preference = session.scalar(select(UserPreference).where(UserPreference.user_id == user_id))
+    if preference and preference.timezone:
+        try:
+            return ZoneInfo(preference.timezone)
+        except ZoneInfoNotFoundError:
+            pass
+    return _server_timezone()
+
+
 def ensure_daily_jobs(session: Session, target_date: date | None = None) -> None:
-    active_date = target_date or utcnow().date()
-    available_at = datetime.combine(active_date, time(hour=3), tzinfo=timezone.utc)
+    now = utcnow()
     active_users = session.scalars(select(AppUser).where(AppUser.is_active.is_(True))).all()
     for user in active_users:
+        user_timezone = _resolve_user_timezone(session, user.id)
+        local_now = now.astimezone(user_timezone)
+        local_date = target_date or local_now.date()
+        available_at = datetime.combine(local_date, time(hour=5), tzinfo=user_timezone).astimezone(timezone.utc)
         enqueue_job(
             session,
             "insights.recompute",
             user.id,
-            {"date": active_date.isoformat(), "scheduled": True, "user_id": user.id},
-            dedupe_key=f"insights:{user.id}:{active_date.isoformat()}",
+            {"date": local_date.isoformat(), "scheduled": True, "user_id": user.id},
+            dedupe_key=f"insights:{user.id}:{local_date.isoformat()}",
             available_at=available_at,
         )
         enqueue_job(
             session,
             "platform.backup",
             user.id,
-            {"date": active_date.isoformat(), "scheduled": True, "user_id": user.id},
-            dedupe_key=f"backup:{user.id}:{active_date.isoformat()}",
+            {"date": local_date.isoformat(), "scheduled": True, "user_id": user.id},
+            dedupe_key=f"backup:{user.id}:{local_date.isoformat()}",
             available_at=available_at + timedelta(minutes=5),
         )

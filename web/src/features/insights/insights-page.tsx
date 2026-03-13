@@ -1,19 +1,38 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
+import { CoachNudgePanel, filterCoachNudges } from '../../components/coach-panels'
 import { EChart } from '../../components/charts/echart'
-import { ActionButton, DataList, EmptyState, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
+import { ActionButton, DataList, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api, type AssistantCoachAdvice } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
 import { useWeightUnit } from '../../lib/user-preferences'
 import { convertMassFromKg, formatMass, formatMassRate, getWeightUnitLabel } from '../../lib/weight-units'
 
-const coachPrompts = [
+const defaultCoachPrompts = [
   'What should I focus on over the next 3 days based on my current logs?',
-  'Give me a coach check-in before my next workout.',
+  'Give me a pre-workout primer before my next session.',
   'How should I adjust calories or training based on my weight trend?',
   'What is the biggest thing holding back progress right now?',
 ] as const
+
+type CheckInDraft = {
+  sleep_hours: string
+  readiness_1_5: string
+  soreness_1_5: string
+  hunger_1_5: string
+  note: string
+}
+
+function createCheckInDraft() {
+  return {
+    sleep_hours: '',
+    readiness_1_5: '',
+    soreness_1_5: '',
+    hunger_1_5: '',
+    note: '',
+  }
+}
 
 function formatCoachBody(body: string | null | undefined) {
   return (body ?? '').replaceAll('**', '').trim()
@@ -56,40 +75,62 @@ function formatCoachMassStat(value: string | number | null | undefined, formatte
   return value
 }
 
-function coachSourceLabel(advice: AssistantCoachAdvice | undefined, briefSource: string | undefined, briefProvider: string | null | undefined, briefModel: string | null | undefined) {
-  const source = advice?.source ?? briefSource
+function coachSourceLabel(advice: AssistantCoachAdvice | undefined, feedSource: string | undefined, briefProvider: string | null | undefined, briefModel: string | null | undefined) {
+  const source = advice?.source ?? feedSource
   const provider = advice?.provider ?? briefProvider
   const model = advice?.model_name ?? briefModel
   const label = source === 'ai' ? 'AI coach' : source === 'deterministic' ? 'Smart fallback' : 'Coach snapshot'
-  return [label, provider, model].filter(Boolean).join(' · ')
+  return [label, provider, model].filter(Boolean).join(' | ')
 }
 
-export function InsightsPage() {
+export function CoachPage() {
   const weightUnit = useWeightUnit()
   const weightUnitLabel = getWeightUnitLabel(weightUnit)
   const insightsQuery = useQuery({ queryKey: ['insights-summary'], queryFn: () => api.getInsightSummary(90) })
-  const briefQuery = useQuery({ queryKey: ['assistant-brief'], queryFn: api.getAssistantBrief, retry: false })
-  const [coachPrompt, setCoachPrompt] = useState('What should I focus on over the next 3 days based on my current logs?')
+  const feedQuery = useQuery({ queryKey: ['assistant-feed'], queryFn: api.getAssistantFeed })
+  const [coachPrompt, setCoachPrompt] = useState<string>(defaultCoachPrompts[0])
+  const [checkInDraft, setCheckInDraft] = useState<CheckInDraft>(createCheckInDraft)
 
-  const recompute = useMutation({
-    mutationFn: api.recomputeInsights,
+  useEffect(() => {
+    const checkIn = feedQuery.data?.feed.today_check_in
+    if (!checkIn) {
+      setCheckInDraft(createCheckInDraft())
+      return
+    }
+    setCheckInDraft({
+      sleep_hours: checkIn.sleep_hours == null ? '' : String(checkIn.sleep_hours),
+      readiness_1_5: checkIn.readiness_1_5 == null ? '' : String(checkIn.readiness_1_5),
+      soreness_1_5: checkIn.soreness_1_5 == null ? '' : String(checkIn.soreness_1_5),
+      hunger_1_5: checkIn.hunger_1_5 == null ? '' : String(checkIn.hunger_1_5),
+      note: checkIn.note ?? '',
+    })
+  }, [feedQuery.data?.feed.today_check_in?.id, feedQuery.data?.feed.today_check_in?.updated_at])
+
+  const refreshFeed = useMutation({
+    mutationFn: api.refreshAssistantFeed,
     onSuccess: async () => {
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
+        queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['insights'] }),
         queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
       ])
     },
   })
 
-  const refreshBrief = useMutation({
-    mutationFn: api.refreshAssistantBrief,
+  const saveCheckIn = useMutation({
+    mutationFn: () => api.updateCoachCheckIn({
+      sleep_hours: checkInDraft.sleep_hours ? Number(checkInDraft.sleep_hours) : null,
+      readiness_1_5: checkInDraft.readiness_1_5 ? Number(checkInDraft.readiness_1_5) : null,
+      soreness_1_5: checkInDraft.soreness_1_5 ? Number(checkInDraft.soreness_1_5) : null,
+      hunger_1_5: checkInDraft.hunger_1_5 ? Number(checkInDraft.hunger_1_5) : null,
+      note: checkInDraft.note || null,
+    }),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
+        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
       ])
     },
   })
@@ -108,42 +149,46 @@ export function InsightsPage() {
   }
 
   const payload = insightsQuery.data?.summary
-  const brief = briefQuery.data?.brief
+  const feed = feedQuery.data?.feed
+  const brief = feed?.brief
   const advice = askCoach.data?.advice
   const calorieEntries = Object.entries(payload?.nutrition.daily_calories ?? {})
+  const coachNudges = filterCoachNudges(feed?.nudges, 'coach')
+  const coachPrompts = feed?.quick_prompts.length ? feed.quick_prompts : [...defaultCoachPrompts]
 
-  if (!payload) {
+  if (!feed) {
     return (
       <div className="space-y-4">
         <PageIntro
           eyebrow="Coach"
-          title={brief?.persona_name ?? 'Coach mode'}
-          description={brief?.persona_tagline ?? 'Log meals, workouts, and weigh-ins, then recompute insights to generate your first tailored coach read.'}
+          title="Coach hub"
+          description="Loading the shared coach feed..."
           actions={(
-            <ActionButton onClick={() => recompute.mutate()} disabled={recompute.isPending}>
-              {recompute.isPending ? 'Recomputing...' : 'Recompute insights'}
+            <ActionButton onClick={() => refreshFeed.mutate()} disabled={refreshFeed.isPending}>
+              {refreshFeed.isPending ? 'Refreshing...' : 'Refresh coach'}
             </ActionButton>
           )}
         />
-        <EmptyState title="No insight snapshot yet" body="Log meals, workouts, and bodyweight entries, then recompute insights to unlock the AI coach view." />
+        <EmptyState title="Coach feed loading" body="As soon as the feed is ready, this page will bring together your next focus, nudges, and tailored advice." />
       </div>
     )
   }
 
-  const coachTitle = advice?.title ?? brief?.title ?? 'Coach board'
-  const coachSummary = advice?.summary ?? brief?.summary ?? 'Ask your coach for a tailored read based on your latest logs.'
+  const coachTitle = advice?.title ?? feed.top_focus.title
+  const coachSummary = advice?.summary ?? feed.top_focus.summary
   const coachBody = formatCoachBody(advice?.body_markdown ?? brief?.body_markdown)
-  const coachActions = advice?.actions.length ? advice.actions : (brief?.actions.length ? brief.actions : payload.recommendations)
-  const coachWatchouts = advice?.watchouts.length ? advice.watchouts : payload.recovery_flags
-  const coachStats = advice?.stats ?? brief?.stats ?? {}
+  const coachActions = advice?.actions.length ? advice.actions : feed.actions
+  const coachWatchouts = advice?.watchouts.length ? advice.watchouts : feed.watchouts
+  const coachStats = advice?.stats ?? feed.stats
   const coachRows = [
-    { label: 'Avg calories (7d)', value: formatSimpleMetric(coachStats['average_calories_7'] ?? Math.round(payload.nutrition.average_calories_7), 'kcal') },
-    { label: 'Goal calories', value: formatSimpleMetric(coachStats['goal_calories'] ?? payload.nutrition.goal_calories, 'kcal') },
-    { label: 'Adherence', value: formatAdherence(coachStats['adherence_ratio'] ?? payload.nutrition.adherence_ratio) },
-    { label: 'Weekly volume', value: formatCoachMassStat(coachStats['weekly_volume_kg'] ?? Math.round(payload.training.weekly_volume_kg), (value) => formatMass(value, weightUnit, { decimals: 0 })) },
-    { label: 'Sessions (7d)', value: formatSimpleMetric(coachStats['session_count_7'] ?? payload.training.session_count_7) },
-    { label: 'PR count', value: formatSimpleMetric(coachStats['pr_count'] ?? payload.training.pr_count) },
-    { label: 'Weight trend', value: formatCoachMassStat(coachStats['weight_trend_kg_per_week'] ?? payload.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit)) },
+    { label: 'Avg calories (7d)', value: formatSimpleMetric(coachStats['average_calories_7'] ?? payload?.nutrition.average_calories_7, 'kcal') },
+    { label: 'Goal calories', value: formatSimpleMetric(coachStats['goal_calories'] ?? payload?.nutrition.goal_calories, 'kcal') },
+    { label: 'Adherence', value: formatAdherence(coachStats['adherence_ratio'] ?? payload?.nutrition.adherence_ratio) },
+    { label: 'Today calories', value: formatSimpleMetric(coachStats['today_calories'], 'kcal') },
+    { label: 'Today protein', value: formatSimpleMetric(coachStats['today_protein_g'], 'g') },
+    { label: 'Protein target', value: formatSimpleMetric(coachStats['protein_target_g'], 'g') },
+    { label: 'Weekly volume', value: formatCoachMassStat(coachStats['weekly_volume_kg'] ?? payload?.training.weekly_volume_kg, (value) => formatMass(value, weightUnit, { decimals: 0 })) },
+    { label: 'Weight trend', value: formatCoachMassStat(coachStats['weight_trend_kg_per_week'] ?? payload?.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit)) },
   ]
 
   return (
@@ -151,41 +196,36 @@ export function InsightsPage() {
       <PageIntro
         eyebrow="Coach"
         title={brief?.persona_name ?? 'FitnessPal Coach'}
-        description={brief?.persona_tagline ?? 'Specialized AI coaching layered on top of your meals, bodyweight trend, training load, and recovery signals.'}
+        description={brief?.persona_tagline ?? 'A proactive coach layer that keeps the next useful move obvious without turning the app into homework.'}
         actions={(
-          <>
-            <ActionButton tone="secondary" onClick={() => refreshBrief.mutate()} disabled={refreshBrief.isPending}>
-              {refreshBrief.isPending ? 'Refreshing brief...' : 'Refresh brief'}
-            </ActionButton>
-            <ActionButton onClick={() => recompute.mutate()} disabled={recompute.isPending}>
-              {recompute.isPending ? 'Recomputing...' : 'Recompute insights'}
-            </ActionButton>
-          </>
+          <ActionButton tone="secondary" onClick={() => refreshFeed.mutate()} disabled={refreshFeed.isPending}>
+            {refreshFeed.isPending ? 'Refreshing...' : 'Refresh coach'}
+          </ActionButton>
         )}
       />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_420px]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_400px]">
         <Panel
           title={coachTitle}
-          subtitle={advice?.focus_area ?? brief?.persona_tagline ?? 'Tailored coaching grounded in your latest app data.'}
+          subtitle={advice?.focus_area ?? 'Top focus'}
         >
           <div className="space-y-4">
-            <div className="overflow-hidden rounded-[28px] bg-[radial-gradient(circle_at_top,_rgba(251,191,36,0.24),_transparent_42%),linear-gradient(140deg,_#020617,_#0f172a_58%,_#1e293b)] p-5 text-canvas">
+            <div className="overflow-hidden rounded-[28px] bg-[radial-gradient(circle_at_top,_rgba(132,204,22,0.18),_transparent_42%),linear-gradient(140deg,_#020617,_#0f172a_58%,_#1e293b)] p-5 text-canvas">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="max-w-2xl">
-                  <div className="text-[11px] uppercase tracking-[0.26em] text-amber-300/75">{advice?.focus_area ?? brief?.persona_name ?? 'Coach read'}</div>
+                  <div className="text-[11px] uppercase tracking-[0.26em] text-lime-300/80">Top focus</div>
                   <div className="mt-3 font-display text-3xl leading-none">{coachTitle}</div>
                   <div className="mt-3 text-base leading-7 text-slate-200">{coachSummary}</div>
                 </div>
                 <div className="rounded-[22px] border border-white/10 bg-white/10 px-4 py-3 text-right text-xs text-slate-200">
-                  <div>{coachSourceLabel(advice, brief?.source, brief?.provider, brief?.model_name)}</div>
-                  <div className="mt-2 text-slate-300">{formatCoachTimestamp(advice?.generated_at ?? brief?.updated_at)}</div>
+                  <div>{coachSourceLabel(advice, feed.source, brief?.provider, brief?.model_name)}</div>
+                  <div className="mt-2 text-slate-300">{formatCoachTimestamp(advice?.generated_at ?? brief?.updated_at ?? feed.generated_at)}</div>
                 </div>
               </div>
 
               {advice?.question ? (
                 <div className="mt-4 rounded-[22px] border border-white/10 bg-white/8 px-4 py-3 text-sm leading-6 text-slate-200">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-amber-300/75">Your ask</div>
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-lime-300/80">Your ask</div>
                   <div className="mt-2">{advice.question}</div>
                 </div>
               ) : null}
@@ -193,15 +233,15 @@ export function InsightsPage() {
               <div className="mt-5 grid gap-3 sm:grid-cols-3">
                 <div className="rounded-[22px] border border-white/10 bg-white/10 px-4 py-4">
                   <div className="text-[11px] uppercase tracking-[0.22em] text-slate-300">Avg calories</div>
-                  <div className="mt-2 font-display text-3xl">{formatSimpleMetric(coachStats['average_calories_7'] ?? Math.round(payload.nutrition.average_calories_7), 'kcal')}</div>
+                  <div className="mt-2 font-display text-3xl">{formatSimpleMetric(coachStats['average_calories_7'] ?? payload?.nutrition.average_calories_7, 'kcal')}</div>
                 </div>
                 <div className="rounded-[22px] border border-white/10 bg-white/10 px-4 py-4">
                   <div className="text-[11px] uppercase tracking-[0.22em] text-slate-300">Weekly volume</div>
-                  <div className="mt-2 font-display text-3xl">{formatCoachMassStat(coachStats['weekly_volume_kg'] ?? Math.round(payload.training.weekly_volume_kg), (value) => formatMass(value, weightUnit, { decimals: 0 }))}</div>
+                  <div className="mt-2 font-display text-3xl">{formatCoachMassStat(coachStats['weekly_volume_kg'] ?? payload?.training.weekly_volume_kg, (value) => formatMass(value, weightUnit, { decimals: 0 }))}</div>
                 </div>
                 <div className="rounded-[22px] border border-white/10 bg-white/10 px-4 py-4">
                   <div className="text-[11px] uppercase tracking-[0.22em] text-slate-300">Weight trend</div>
-                  <div className="mt-2 font-display text-3xl">{formatCoachMassStat(coachStats['weight_trend_kg_per_week'] ?? payload.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit))}</div>
+                  <div className="mt-2 font-display text-3xl">{formatCoachMassStat(coachStats['weight_trend_kg_per_week'] ?? payload?.body.weight_trend_kg_per_week, (value) => formatMassRate(value, weightUnit))}</div>
                 </div>
               </div>
             </div>
@@ -231,164 +271,157 @@ export function InsightsPage() {
                 ))}
               </div>
             ) : null}
-
-            {advice?.follow_up_prompt ? (
-              <button
-                type="button"
-                className="w-full rounded-[22px] border border-slate-200 bg-slate-50 px-4 py-4 text-left text-sm leading-6 text-slate-700 transition hover:border-amber-300 hover:bg-amber-50"
-                onClick={() => runCoachPrompt(advice.follow_up_prompt ?? '')}
-              >
-                <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Coach follow-up</div>
-                <div className="mt-2 font-semibold text-slate-950">{advice.follow_up_prompt}</div>
-              </button>
-            ) : null}
           </div>
         </Panel>
 
-        <Panel
-          title="Ask your coach"
-          subtitle="Each answer gets your live insight snapshot, recent meals, recent workouts, recent weigh-ins, and a built-in coach system prompt."
-        >
-          <form
-            className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault()
-              runCoachPrompt(coachPrompt)
-            }}
-          >
-            <LabelledTextArea
-              label="Prompt"
-              value={coachPrompt}
-              onChange={setCoachPrompt}
-              rows={6}
-              placeholder="Example: I have an upper session tomorrow and my weight is drifting down. What should I change?"
-            />
-
-            <div className="flex flex-wrap gap-2">
-              <ActionButton type="submit" disabled={askCoach.isPending || !coachPrompt.trim()}>
-                {askCoach.isPending ? 'Coaching...' : 'Get tailored advice'}
-              </ActionButton>
-              {advice?.follow_up_prompt ? (
-                <ActionButton tone="secondary" onClick={() => setCoachPrompt(advice.follow_up_prompt ?? '')} className="w-auto">
-                  Use follow-up
-                </ActionButton>
-              ) : null}
-            </div>
-
-            {askCoach.isError ? (
-              <div className="app-status app-status-danger rounded-[22px] px-4 py-3 text-sm">
-                {askCoach.error.message}
-              </div>
-            ) : null}
-
-            <div className="space-y-2">
-              <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Quick prompts</div>
-              <div className="grid gap-2">
-                {coachPrompts.map((prompt) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                    className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 text-left text-sm leading-6 text-slate-700 transition hover:border-amber-300 hover:bg-amber-50"
-                    onClick={() => runCoachPrompt(prompt)}
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-[24px] bg-slate-100 p-4">
-              <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">What the coach sees</div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-[20px] bg-white px-4 py-3">
-                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Calories</div>
-                  <div className="mt-2 font-display text-2xl text-slate-950">{Math.round(payload.nutrition.average_calories_7)} kcal</div>
-                </div>
-                <div className="rounded-[20px] bg-white px-4 py-3">
-                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Adherence</div>
-                  <div className="mt-2 font-display text-2xl text-slate-950">{formatAdherence(payload.nutrition.adherence_ratio)}</div>
-                </div>
-                <div className="rounded-[20px] bg-white px-4 py-3">
-                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Volume</div>
-                  <div className="mt-2 font-display text-2xl text-slate-950">{formatMass(payload.training.weekly_volume_kg, weightUnit, { decimals: 0 })}</div>
-                </div>
-                <div className="rounded-[20px] bg-white px-4 py-3">
-                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Weight trend</div>
-                  <div className="mt-2 font-display text-2xl text-slate-950">{formatMassRate(payload.body.weight_trend_kg_per_week, weightUnit)}</div>
-                </div>
-              </div>
-            </div>
-          </form>
-        </Panel>
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_360px]">
         <div className="space-y-4">
-          <Panel title="Nutrition and trend charts" subtitle={`Snapshot generated ${new Date(payload.generated_at).toLocaleString()}`}>
-            <div className="grid gap-4 lg:grid-cols-2">
-              <EChart
-                style={{ height: 280 }}
-                option={{
-                  tooltip: { trigger: 'axis' },
-                  xAxis: { type: 'category', data: calorieEntries.map(([day]) => day) },
-                  yAxis: { type: 'value' },
-                  series: [
-                    {
-                      type: 'line',
-                      smooth: true,
-                      data: calorieEntries.map(([, calories]) => calories),
-                      lineStyle: { color: '#d97706', width: 3 },
-                      areaStyle: { color: '#d97706', opacity: 0.14 },
-                      showSymbol: false,
-                    },
-                  ],
-                }}
-              />
-              <EChart
-                style={{ height: 280 }}
-                option={{
-                  tooltip: { trigger: 'axis' },
-                  xAxis: { type: 'category', data: payload.body.trend_7.map((_, index) => index + 1) },
-                  yAxis: { type: 'value' },
-                  series: [
-                    { name: `7-day (${weightUnitLabel})`, type: 'line', smooth: true, data: payload.body.trend_7.map((value) => convertMassFromKg(value, weightUnit)), lineStyle: { color: '#fb7185' } },
-                    { name: `30-day (${weightUnitLabel})`, type: 'line', smooth: true, data: payload.body.trend_30.map((value) => convertMassFromKg(value, weightUnit)), lineStyle: { color: '#84cc16' } },
-                  ],
-                }}
-              />
-            </div>
+          <Panel
+            title={feed.today_check_in?.is_today ? "Today's check-in" : 'Daily check-in'}
+            subtitle="A few quick recovery and appetite signals make the coach meaningfully more personal without creating homework."
+          >
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault()
+                saveCheckIn.mutate()
+              }}
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                <LabelledInput label="Sleep hours" type="number" step="0.1" value={checkInDraft.sleep_hours} onChange={(value) => setCheckInDraft((current) => ({ ...current, sleep_hours: value }))} placeholder="7.5" />
+                <LabelledInput label="Readiness (1-5)" type="number" value={checkInDraft.readiness_1_5} onChange={(value) => setCheckInDraft((current) => ({ ...current, readiness_1_5: value }))} placeholder="4" />
+                <LabelledInput label="Soreness (1-5)" type="number" value={checkInDraft.soreness_1_5} onChange={(value) => setCheckInDraft((current) => ({ ...current, soreness_1_5: value }))} placeholder="2" />
+                <LabelledInput label="Hunger (1-5)" type="number" value={checkInDraft.hunger_1_5} onChange={(value) => setCheckInDraft((current) => ({ ...current, hunger_1_5: value }))} placeholder="3" />
+              </div>
+              <LabelledTextArea label="Note" value={checkInDraft.note} onChange={(value) => setCheckInDraft((current) => ({ ...current, note: value }))} rows={3} placeholder="Low sleep, high stress, flat in the gym, appetite strong, etc." />
+              <div className="flex flex-wrap gap-2">
+                <ActionButton type="submit" disabled={saveCheckIn.isPending}>{saveCheckIn.isPending ? 'Saving...' : 'Save check-in'}</ActionButton>
+                {feed.today_check_in ? (
+                  <div className="rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">
+                    {feed.today_check_in.is_today ? 'Saved for today' : `Last saved ${new Date(feed.today_check_in.updated_at).toLocaleDateString()}`}
+                  </div>
+                ) : null}
+              </div>
+              {saveCheckIn.isError ? <div className="app-status app-status-danger rounded-[22px] px-4 py-3 text-sm">{saveCheckIn.error.message}</div> : null}
+            </form>
           </Panel>
 
-          <Panel title="Coach signals" subtitle="Deterministic recommendations from the insight engine stay visible under the AI layer.">
-            <div className="grid gap-3 md:grid-cols-2">
-              {payload.recommendations.map((item) => (
-                <div key={item} className="rounded-[24px] bg-slate-950 px-4 py-4 text-sm leading-6 text-canvas">
-                  {item}
+          <Panel
+            title="Ask your coach"
+            subtitle="Each answer gets the live coach feed, latest trends, recent meals, recent workouts, recent weigh-ins, goals, and today's check-in."
+          >
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault()
+                runCoachPrompt(coachPrompt)
+              }}
+            >
+              <LabelledTextArea
+                label="Prompt"
+                value={coachPrompt}
+                onChange={setCoachPrompt}
+                rows={5}
+                placeholder="Example: I have an upper session tomorrow and my weight is drifting down. What should I change?"
+              />
+
+              <div className="flex flex-wrap gap-2">
+                <ActionButton type="submit" disabled={askCoach.isPending || !coachPrompt.trim()}>
+                  {askCoach.isPending ? 'Coaching...' : 'Get tailored advice'}
+                </ActionButton>
+              </div>
+
+              {askCoach.isError ? (
+                <div className="app-status app-status-danger rounded-[22px] px-4 py-3 text-sm">
+                  {askCoach.error.message}
                 </div>
-              ))}
-              {!payload.recommendations.length ? (
-                <EmptyState title="No signals yet" body="As soon as the snapshot has enough data, the app will surface deterministic coaching signals here." />
               ) : null}
-            </div>
+
+              <div className="space-y-2">
+                <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Quick prompts</div>
+                <div className="grid gap-2">
+                  {coachPrompts.map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 text-left text-sm leading-6 text-slate-700 transition hover:border-lime-300 hover:bg-lime-50"
+                      onClick={() => runCoachPrompt(prompt)}
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </form>
+          </Panel>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.7fr)]">
+        <div className="space-y-4">
+          <CoachNudgePanel
+            title="Coach nudges"
+            subtitle="The proactive cues that should change what you do next, not just what you think."
+            nudges={coachNudges}
+            emptyTitle="No coach nudges right now"
+            emptyBody="The coach will surface extra nudges here as soon as your logs or check-ins suggest a more specific course correction."
+          />
+
+          <Panel title="Nutrition and trend charts" subtitle={`Coach timezone: ${feed.freshness.timezone}`}>
+            {payload ? (
+              <div className="grid gap-4 lg:grid-cols-2">
+                <EChart
+                  style={{ height: 280 }}
+                  option={{
+                    tooltip: { trigger: 'axis' },
+                    xAxis: { type: 'category', data: calorieEntries.map(([day]) => day) },
+                    yAxis: { type: 'value' },
+                    series: [
+                      {
+                        type: 'line',
+                        smooth: true,
+                        data: calorieEntries.map(([, calories]) => calories),
+                        lineStyle: { color: '#65a30d', width: 3 },
+                        areaStyle: { color: '#65a30d', opacity: 0.14 },
+                        showSymbol: false,
+                      },
+                    ],
+                  }}
+                />
+                <EChart
+                  style={{ height: 280 }}
+                  option={{
+                    tooltip: { trigger: 'axis' },
+                    xAxis: { type: 'category', data: payload.body.trend_7.map((_, index) => index + 1) },
+                    yAxis: { type: 'value' },
+                    series: [
+                      { name: `7-day (${weightUnitLabel})`, type: 'line', smooth: true, data: payload.body.trend_7.map((value) => convertMassFromKg(value, weightUnit)), lineStyle: { color: '#fb7185' } },
+                      { name: `30-day (${weightUnitLabel})`, type: 'line', smooth: true, data: payload.body.trend_30.map((value) => convertMassFromKg(value, weightUnit)), lineStyle: { color: '#0ea5e9' } },
+                    ],
+                  }}
+                />
+              </div>
+            ) : (
+              <EmptyState title="No snapshot yet" body="The charts will start filling in as soon as meals, workouts, and weigh-ins are logged." />
+            )}
           </Panel>
         </div>
 
         <div className="space-y-4">
-          <Panel title="Recovery flags" subtitle="Signals that could explain stalled performance, low output, or extra fatigue.">
-            {payload.recovery_flags.length ? (
+          <Panel title="Freshness" subtitle="The coach is only as useful as the inputs it can trust right now.">
+            {feed.freshness.stale_signals.length ? (
               <div className="space-y-3">
-                {payload.recovery_flags.map((flag) => (
-                  <div key={flag} className="app-status app-status-danger rounded-[24px] px-4 py-4 text-sm">
-                    {flag}
+                {feed.freshness.stale_signals.map((signal) => (
+                  <div key={signal} className="app-status app-status-warning rounded-[22px] px-4 py-3 text-sm">
+                    {signal}
                   </div>
                 ))}
               </div>
             ) : (
-              <EmptyState title="No flags raised" body="Current meal adherence, bodyweight, and volume data are not triggering recovery warnings." />
+              <EmptyState title="Fresh enough to coach" body="Today's key inputs are up to date, so the coach can stay specific instead of generic." />
             )}
           </Panel>
 
-          <Panel title="Scoreboard" subtitle="Compact numeric summary for the current coaching window.">
+          <Panel title="Coach stats" subtitle="A compact read of what the coach is optimizing around today.">
             <DataList rows={coachRows} />
           </Panel>
         </div>
@@ -396,3 +429,5 @@ export function InsightsPage() {
     </div>
   )
 }
+
+export const InsightsPage = CoachPage
