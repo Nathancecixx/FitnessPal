@@ -9,6 +9,7 @@ import { queryClient } from '../../lib/query-client'
 
 const navItems = [
   { to: '/', label: 'Today', hint: 'Overview' },
+  { to: '/calendar', label: 'Calendar', hint: 'Days' },
   { to: '/nutrition', label: 'Food', hint: 'Meals' },
   { to: '/training', label: 'Train', hint: 'Sessions' },
   { to: '/weight', label: 'Weight', hint: 'Trends' },
@@ -16,6 +17,18 @@ const navItems = [
   { to: '/coach', label: 'Coach', hint: 'Signals' },
   { to: '/settings', label: 'Settings', hint: 'System' },
 ] as const
+
+function isNavItemActive(pathname: string, to: string) {
+  if (to === '/') {
+    return pathname === '/'
+  }
+
+  if (pathname === '/insights' && to === '/coach') {
+    return true
+  }
+
+  return pathname === to || pathname.startsWith(`${to}/`)
+}
 
 const THEME_STORAGE_KEY = 'fitnesspal-theme'
 
@@ -96,7 +109,7 @@ function MobileNav({ pathname }: { pathname: string }) {
     <nav className="app-panel-strong fixed inset-x-0 bottom-0 z-30 border-t backdrop-blur lg:hidden">
       <div className="mx-auto flex max-w-screen-sm gap-2 overflow-x-auto px-3 pb-[calc(0.85rem+env(safe-area-inset-bottom))] pt-3">
         {navItems.map((item) => {
-          const active = pathname === item.to
+          const active = isNavItemActive(pathname, item.to)
           return (
             <Link
               key={item.to}
@@ -136,7 +149,7 @@ export function AppShell() {
   const [hideUpdateToast, setHideUpdateToast] = useState(false)
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession, retry: false })
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  const currentItem = useMemo(() => navItems.find((item) => item.to === pathname || (pathname === '/insights' && item.to === '/coach')) ?? navItems[0], [pathname])
+  const currentItem = useMemo(() => navItems.find((item) => isNavItemActive(pathname, item.to)) ?? navItems[0], [pathname])
   const sessionUser = sessionQuery.data?.user
   const isSetupRoute = pathname === '/setup-password'
   const logout = useMutation({
@@ -215,8 +228,11 @@ export function AppShell() {
               <Link
                 key={item.to}
                 to={item.to}
-                className="block rounded-2xl px-4 py-3 text-sm font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
-                activeProps={{ className: 'block rounded-2xl bg-lime px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg' }}
+                className={`block rounded-2xl px-4 py-3 text-sm font-semibold transition ${
+                  isNavItemActive(pathname, item.to)
+                    ? 'bg-lime text-slate-950 shadow-lg'
+                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                }`}
               >
                 <div>{item.label}</div>
               </Link>
@@ -271,8 +287,11 @@ export function AppShell() {
                   <Link
                     key={item.to}
                     to={item.to}
-                    className="whitespace-nowrap rounded-full bg-slate-100 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600"
-                    activeProps={{ className: 'whitespace-nowrap rounded-full bg-slate-950 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-canvas' }}
+                    className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] ${
+                      isNavItemActive(pathname, item.to)
+                        ? 'bg-slate-950 text-canvas'
+                        : 'bg-slate-100 text-slate-600'
+                    }`}
                   >
                     {item.label}
                   </Link>

@@ -6,6 +6,7 @@ import { StatCard, TinyLineChart } from '../../components/cards/stat-card'
 import { ActionButton, DraftStatusBanner, EmptyState, ErrorState, LabelledTextArea, LoadingState, PageIntro, Panel } from '../../components/ui'
 import { api, type AssistantDraft } from '../../lib/api'
 import { useDraftState } from '../../lib/draft-store'
+import { invalidateMealQueries, invalidateWeightQueries, invalidateWorkoutQueries } from '../../lib/query-invalidations'
 import { queryClient } from '../../lib/query-client'
 import { useWeightUnit } from '../../lib/user-preferences'
 import { convertMassFromKg, formatMass, formatMassRate, getWeightUnitLabel, type WeightUnit } from '../../lib/weight-units'
@@ -152,17 +153,19 @@ export function DashboardPage() {
       setAssistantResult((current) => current
         ? { ...current, drafts: current.drafts.filter((item) => item !== draft) }
         : current)
+      if (draft.kind === 'meal_entry') {
+        await invalidateMealQueries()
+        return
+      }
+
+      if (draft.kind === 'weight_entry') {
+        await invalidateWeightQueries()
+        return
+      }
+
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-        queryClient.invalidateQueries({ queryKey: ['meals'] }),
-        queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
-        queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
-        queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
+        invalidateWorkoutQueries(),
         queryClient.invalidateQueries({ queryKey: ['exercises'] }),
-        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
-        queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
       ])
     },
   })

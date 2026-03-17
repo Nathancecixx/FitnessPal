@@ -5,6 +5,7 @@ import { CoachNudgePanel, filterCoachNudges } from '../../components/coach-panel
 import { ActionButton, ConfirmSheet, type ConfirmSheetRequest, DraftStatusBanner, EmptyState, ErrorState, LabelledInput, LabelledSelect, LoadingState, PageIntro, Panel } from '../../components/ui'
 import { api, type Routine, type WorkoutSession, type WorkoutTemplate } from '../../lib/api'
 import { useDraftState } from '../../lib/draft-store'
+import { invalidateWorkoutQueries } from '../../lib/query-invalidations'
 import { queryClient } from '../../lib/query-client'
 import { useWeightUnit } from '../../lib/user-preferences'
 import { convertMassToKg, formatMass, formatMassInput, getWeightUnitLabel, type WeightUnit } from '../../lib/weight-units'
@@ -326,10 +327,7 @@ export function TrainingPage() {
       sessionDraftState.meta.clearDraft()
       setEditingSessionId(null)
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
+        invalidateWorkoutQueries(),
         queryClient.invalidateQueries({ queryKey: ['exercise-progression'] }),
       ])
     },
@@ -342,12 +340,7 @@ export function TrainingPage() {
         setEditingSessionId(null)
         sessionDraftState.meta.clearDraft()
       }
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateWorkoutQueries()
     },
   })
 

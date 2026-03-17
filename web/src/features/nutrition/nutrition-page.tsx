@@ -5,6 +5,7 @@ import { CoachNudgePanel, filterCoachNudges } from '../../components/coach-panel
 import { ActionButton, ConfirmSheet, type ConfirmSheetRequest, DraftStatusBanner, EmptyState, ErrorState, LabelledInput, LabelledSelect, LoadingState, PageIntro, Panel } from '../../components/ui'
 import { api, type FoodImportDraft, type FoodItem, type MealEntry, type MealEntryItem, type MealPhotoDraft } from '../../lib/api'
 import { useDraftState } from '../../lib/draft-store'
+import { invalidateMealQueries } from '../../lib/query-invalidations'
 import { queryClient } from '../../lib/query-client'
 
 type DraftEditorItem = {
@@ -203,12 +204,7 @@ export function NutritionPage() {
     }),
     onSuccess: async () => {
       quickMealState.meta.clearDraft()
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['meals'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateMealQueries()
     },
   })
 
@@ -233,12 +229,7 @@ export function NutritionPage() {
       source: 'recipe',
     }),
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['meals'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateMealQueries()
     },
   })
 
@@ -249,12 +240,7 @@ export function NutritionPage() {
       source: 'template',
     }),
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['meals'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateMealQueries()
     },
   })
 
@@ -276,12 +262,7 @@ export function NutritionPage() {
       })),
     }),
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['meals'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateMealQueries()
     },
   })
 
@@ -355,10 +336,7 @@ export function NutritionPage() {
       })
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['meal-photos'] }),
-        queryClient.invalidateQueries({ queryKey: ['meals'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
+        invalidateMealQueries(),
       ])
     },
     onError: (error) => setPhotoStatus(error.message),
@@ -373,12 +351,7 @@ export function NutritionPage() {
         delete next[variables.mealId]
         return next
       })
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['meals'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateMealQueries()
     },
     onError: (error) => setPhotoStatus(error.message),
   })
@@ -394,12 +367,7 @@ export function NutritionPage() {
         delete next[mealId]
         return next
       })
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['meals'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateMealQueries()
     },
   })
 

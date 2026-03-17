@@ -9,6 +9,7 @@ import {
   setSyncFlushing,
   type QueuedSyncRequest,
 } from './offline'
+import { invalidateMealQueries, invalidateWeightQueries, invalidateWorkoutQueries } from './query-invalidations'
 import { queryClient } from './query-client'
 import type { WeightUnit } from './weight-units'
 
@@ -528,6 +529,44 @@ export type CoachCheckIn = {
   updated_at: string
 }
 
+export type CalendarDaySummary = {
+  date: string
+  is_in_month: boolean
+  is_today: boolean
+  is_future: boolean
+  is_editable: boolean
+  meal_count: number
+  total_calories: number
+  workout_count: number
+  latest_weight_kg?: number | null
+  has_check_in: boolean
+}
+
+export type CalendarMonthResponse = {
+  anchor_date: string
+  month_start: string
+  month_end: string
+  grid_start: string
+  grid_end: string
+  today: string
+  timezone: string
+  weeks: CalendarDaySummary[][]
+}
+
+export type CalendarDayDetail = {
+  date: string
+  today: string
+  timezone: string
+  is_today: boolean
+  is_future: boolean
+  is_editable: boolean
+  summary: CalendarDaySummary
+  meals: MealEntry[]
+  workouts: WorkoutSession[]
+  weight_entries: WeightEntry[]
+  check_in?: CoachCheckIn | null
+}
+
 export type CoachNudge = {
   id: string
   surface: 'coach' | 'nutrition' | 'training' | 'weight'
@@ -719,36 +758,17 @@ function updatePagedCache<T extends { id: string }>(queryKey: readonly unknown[]
 
 function invalidateQueuedPath(path: string) {
   if (path.startsWith('/meals')) {
-    void Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['meals'] }),
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-      queryClient.invalidateQueries({ queryKey: ['insights'] }),
-      queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
-    ])
+    void invalidateMealQueries()
     return
   }
 
   if (path.startsWith('/workout-sessions')) {
-    void Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-      queryClient.invalidateQueries({ queryKey: ['insights'] }),
-      queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
-    ])
+    void invalidateWorkoutQueries()
     return
   }
 
   if (path.startsWith('/weight-entries')) {
-    void Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
-      queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-      queryClient.invalidateQueries({ queryKey: ['insights'] }),
-      queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      queryClient.invalidateQueries({ queryKey: ['assistant-brief'] }),
-    ])
+    void invalidateWeightQueries()
   }
 }
 
@@ -1067,9 +1087,11 @@ export const api = {
   parseAssistantNote: (note: string) => request<AssistantDraftResponse>('/assistant/parse', { method: 'POST', body: JSON.stringify({ note }) }),
   getAssistantFeed: () => request<{ feed: AssistantFeed }>('/assistant/feed'),
   refreshAssistantFeed: () => request<{ feed: AssistantFeed }>('/assistant/feed/refresh', { method: 'POST' }),
-  getCoachCheckIn: () => request<{ check_in: CoachCheckIn | null }>('/assistant/check-in'),
-  updateCoachCheckIn: (payload: Partial<Pick<CoachCheckIn, 'sleep_hours' | 'readiness_1_5' | 'soreness_1_5' | 'hunger_1_5' | 'note'>>) => request<{ check_in: CoachCheckIn | null }>('/assistant/check-in', { method: 'PUT', body: JSON.stringify(payload) }),
+  getCoachCheckIn: (date?: string) => request<{ check_in: CoachCheckIn | null }>(`/assistant/check-in${buildQueryString({ date })}`),
+  updateCoachCheckIn: (payload: Partial<Pick<CoachCheckIn, 'check_in_date' | 'sleep_hours' | 'readiness_1_5' | 'soreness_1_5' | 'hunger_1_5' | 'note'>>) => request<{ check_in: CoachCheckIn | null }>('/assistant/check-in', { method: 'PUT', body: JSON.stringify(payload) }),
   getAssistantBrief: () => request<{ brief: AssistantBrief }>('/assistant/brief'),
   refreshAssistantBrief: () => request<{ brief: AssistantBrief }>('/assistant/brief/refresh', { method: 'POST' }),
   askCoachAdvice: (prompt: string) => request<{ advice: AssistantCoachAdvice }>('/assistant/advice', { method: 'POST', body: JSON.stringify({ prompt }) }),
+  getCalendarMonth: (anchorDate?: string) => request<CalendarMonthResponse>(`/calendar/month${buildQueryString({ anchor_date: anchorDate })}`),
+  getCalendarDay: (date: string) => request<CalendarDayDetail>(`/calendar/days/${encodeURIComponent(date)}`),
 }

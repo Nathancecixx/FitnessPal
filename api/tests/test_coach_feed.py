@@ -209,6 +209,43 @@ class CoachFeedApiTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].payload_json["source"], "coach_check_in")
 
+    def test_assistant_check_in_supports_explicit_dates_without_changing_default_today_behavior(self) -> None:
+        today_response = self.client.put(
+            "/assistant/check-in",
+            json={
+                "sleep_hours": 7.5,
+                "readiness_1_5": 4,
+                "soreness_1_5": 2,
+                "hunger_1_5": 3,
+                "note": "Today note.",
+            },
+        )
+        self.assertEqual(today_response.status_code, 200)
+
+        dated_response = self.client.put(
+            "/assistant/check-in",
+            json={
+                "check_in_date": "2026-03-10",
+                "sleep_hours": 8,
+                "readiness_1_5": 5,
+                "soreness_1_5": 1,
+                "hunger_1_5": 3,
+                "note": "Earlier note.",
+            },
+        )
+        self.assertEqual(dated_response.status_code, 200)
+        self.assertEqual(dated_response.json()["check_in"]["check_in_date"], "2026-03-10")
+        self.assertEqual(dated_response.json()["check_in"]["note"], "Earlier note.")
+
+        explicit_response = self.client.get("/assistant/check-in?date=2026-03-10")
+        self.assertEqual(explicit_response.status_code, 200)
+        self.assertEqual(explicit_response.json()["check_in"]["check_in_date"], "2026-03-10")
+        self.assertEqual(explicit_response.json()["check_in"]["note"], "Earlier note.")
+
+        latest_response = self.client.get("/assistant/check-in")
+        self.assertEqual(latest_response.status_code, 200)
+        self.assertEqual(latest_response.json()["check_in"]["note"], "Today note.")
+
 
 if __name__ == "__main__":
     unittest.main()

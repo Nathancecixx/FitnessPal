@@ -4,6 +4,8 @@ import { Suspense, lazy } from 'react'
 import { AppShell } from './components/layout/app-shell'
 
 const LazyDashboardPage = lazy(async () => ({ default: (await import('./features/dashboard/dashboard-page')).DashboardPage }))
+const LazyCalendarPage = lazy(async () => ({ default: (await import('./features/calendar/calendar-page')).CalendarPage }))
+const LazyCalendarRedirectPage = lazy(async () => ({ default: (await import('./features/calendar/calendar-page')).CalendarRedirectPage }))
 const LazyNutritionPage = lazy(async () => ({ default: (await import('./features/nutrition/nutrition-page')).NutritionPage }))
 const LazyTrainingPage = lazy(async () => ({ default: (await import('./features/training/training-page')).TrainingPage }))
 const LazyWeightPage = lazy(async () => ({ default: (await import('./features/weight/weight-page')).WeightPage }))
@@ -28,6 +30,22 @@ function NutritionPage() {
   return (
     <Suspense fallback={<LoadingFallback />}>
       <LazyNutritionPage />
+    </Suspense>
+  )
+}
+
+function CalendarPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazyCalendarPage />
+    </Suspense>
+  )
+}
+
+function CalendarRedirectPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <LazyCalendarRedirectPage />
     </Suspense>
   )
 }
@@ -83,6 +101,8 @@ function SetupPasswordPage() {
 const rootRoute = createRootRoute({ component: AppShell })
 
 const dashboardRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: DashboardPage })
+const calendarRedirectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/calendar', component: CalendarRedirectPage })
+const calendarRoute = createRoute({ getParentRoute: () => rootRoute, path: '/calendar/$date', component: CalendarPage })
 const nutritionRoute = createRoute({ getParentRoute: () => rootRoute, path: '/nutrition', component: NutritionPage })
 const trainingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/training', component: TrainingPage })
 const weightRoute = createRoute({ getParentRoute: () => rootRoute, path: '/weight', component: WeightPage })
@@ -94,6 +114,8 @@ const setupPasswordRoute = createRoute({ getParentRoute: () => rootRoute, path: 
 
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
+  calendarRedirectRoute,
+  calendarRoute,
   nutritionRoute,
   trainingRoute,
   weightRoute,

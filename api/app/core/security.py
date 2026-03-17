@@ -22,6 +22,7 @@ settings = get_settings()
 SESSION_SCOPES = (
     "platform:read",
     "platform:write",
+    "calendar:read",
     "nutrition:*",
     "training:*",
     "metrics:*",

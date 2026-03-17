@@ -70,6 +70,7 @@ export function LabelledInput(props: {
   step?: string
   error?: string
   hint?: ReactNode
+  disabled?: boolean
 }) {
   return (
     <label className="block">
@@ -83,6 +84,7 @@ export function LabelledInput(props: {
         type={props.type ?? 'text'}
         value={props.value}
         step={props.step}
+        disabled={props.disabled}
         onChange={(event) => props.onChange(event.target.value)}
         placeholder={props.placeholder}
       />
@@ -99,6 +101,7 @@ export function LabelledTextArea(props: {
   rows?: number
   error?: string
   hint?: ReactNode
+  disabled?: boolean
 }) {
   return (
     <label className="block">
@@ -111,6 +114,7 @@ export function LabelledTextArea(props: {
         )}
         value={props.value}
         rows={props.rows ?? 4}
+        disabled={props.disabled}
         onChange={(event) => props.onChange(event.target.value)}
         placeholder={props.placeholder}
       />
@@ -126,6 +130,7 @@ export function LabelledSelect(props: {
   options: Array<{ label: string; value: string }>
   error?: string
   hint?: ReactNode
+  disabled?: boolean
 }) {
   return (
     <label className="block">
@@ -137,6 +142,7 @@ export function LabelledSelect(props: {
           props.error ? 'border-rose-300 focus:border-rose-400' : undefined,
         )}
         value={props.value}
+        disabled={props.disabled}
         onChange={(event) => props.onChange(event.target.value)}
       >
         {props.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}

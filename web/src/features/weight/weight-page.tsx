@@ -6,6 +6,7 @@ import { EChart } from '../../components/charts/echart'
 import { ActionButton, ConfirmSheet, type ConfirmSheetRequest, DataList, DraftStatusBanner, EmptyState, ErrorState, LabelledInput, LabelledTextArea, LoadingState, PageIntro, Panel } from '../../components/ui'
 import { api } from '../../lib/api'
 import { useDraftState } from '../../lib/draft-store'
+import { invalidateWeightQueries } from '../../lib/query-invalidations'
 import { queryClient } from '../../lib/query-client'
 import { useWeightUnit } from '../../lib/user-preferences'
 import { convertMassFromKg, convertMassToKg, formatMass, formatMassInput, formatMassRate, getWeightUnitLabel } from '../../lib/weight-units'
@@ -85,13 +86,7 @@ export function WeightPage() {
     onSuccess: async () => {
       entryDraftState.meta.clearDraft()
       setEditingEntryId(null)
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
-        queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateWeightQueries()
     },
   })
 
@@ -102,13 +97,7 @@ export function WeightPage() {
         setEditingEntryId(null)
         entryDraftState.meta.clearDraft()
       }
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['weight-entries'] }),
-        queryClient.invalidateQueries({ queryKey: ['weight-trends'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights'] }),
-        queryClient.invalidateQueries({ queryKey: ['insights-summary'] }),
-      ])
+      await invalidateWeightQueries()
     },
   })
 

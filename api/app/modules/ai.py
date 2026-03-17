@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,6 +20,7 @@ from app.core.local_ai import (
     create_profile,
     delete_profile,
     generate_coach_advice,
+    get_check_in_for_date,
     get_feature_bindings,
     get_latest_coach_brief,
     get_persona_config,
@@ -102,6 +104,7 @@ class AssistantCoachAdviceRequest(BaseModel):
 
 
 class AssistantCheckInUpdate(BaseModel):
+    check_in_date: date | None = None
     sleep_hours: float | None = Field(default=None, ge=0, le=24)
     readiness_1_5: int | None = Field(default=None, ge=1, le=5)
     soreness_1_5: int | None = Field(default=None, ge=1, le=5)
@@ -130,11 +133,11 @@ def _ensure_snapshot(session: Session, user_id: str, *, recompute: bool = False)
     return persist_snapshot(session, user_id, payload, source="assistant_refresh" if recompute else "assistant_bootstrap")
 
 
-def _serialize_assistant_check_in(session: Session, user_id: str) -> dict[str, Any] | None:
-    row = get_today_or_latest_check_in(session, user_id)
+def _serialize_assistant_check_in(session: Session, user_id: str, target_date: date | None = None) -> dict[str, Any] | None:
+    timezone_info, timezone_name = resolve_user_timezone(session, user_id)
+    row = get_check_in_for_date(session, user_id, target_date) if target_date else get_today_or_latest_check_in(session, user_id)
     if not row:
         return None
-    timezone_info, timezone_name = resolve_user_timezone(session, user_id)
     return serialize_coach_check_in(row, timezone_name, today_date=utcnow().astimezone(timezone_info).date())
 
 
@@ -272,8 +275,12 @@ def refresh_assistant_feed(actor: Actor = Depends(assistant_use), session: Sessi
 
 
 @router.get("/assistant/check-in")
-def get_assistant_check_in(actor: Actor = Depends(assistant_use), session: Session = Depends(get_session)) -> dict[str, Any]:
-    return {"check_in": _serialize_assistant_check_in(session, actor.user_id)}
+def get_assistant_check_in(
+    target_date: date | None = Query(default=None, alias="date"),
+    actor: Actor = Depends(assistant_use),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    return {"check_in": _serialize_assistant_check_in(session, actor.user_id, target_date)}
 
 
 @router.put("/assistant/check-in")
@@ -287,7 +294,7 @@ def update_assistant_check_in(
     session.refresh(row)
     enqueue_live_insights_refresh(session, actor.user_id, {"source": "coach_check_in", "check_in_id": row.id, "user_id": actor.user_id})
     write_audit(session, actor, "assistant_check_in.updated", "assistant_check_in", row.id, payload.model_dump())
-    return {"check_in": _serialize_assistant_check_in(session, actor.user_id)}
+    return {"check_in": _serialize_assistant_check_in(session, actor.user_id, payload.check_in_date)}
 
 
 @router.get("/assistant/brief")

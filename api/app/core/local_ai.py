@@ -1203,6 +1203,15 @@ def get_today_or_latest_check_in(session: Session, user_id: str) -> CoachCheckIn
     )
 
 
+def get_check_in_for_date(session: Session, user_id: str, check_in_date: date) -> CoachCheckIn | None:
+    return session.scalar(
+        select(CoachCheckIn)
+        .where(CoachCheckIn.user_id == user_id, CoachCheckIn.check_in_date == check_in_date)
+        .order_by(CoachCheckIn.updated_at.desc())
+        .limit(1)
+    )
+
+
 def serialize_coach_check_in(row: CoachCheckIn, timezone_name: str, *, today_date: Any | None = None) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -1223,6 +1232,7 @@ def upsert_coach_check_in(
     session: Session,
     user_id: str,
     *,
+    check_in_date: date | None = None,
     sleep_hours: float | None = None,
     readiness_1_5: int | None = None,
     soreness_1_5: int | None = None,
@@ -1230,13 +1240,14 @@ def upsert_coach_check_in(
     note: str | None = None,
 ) -> CoachCheckIn:
     local_now, _ = _user_local_now(session, user_id)
+    target_date = check_in_date or local_now.date()
     row = session.scalar(
         select(CoachCheckIn)
-        .where(CoachCheckIn.user_id == user_id, CoachCheckIn.check_in_date == local_now.date())
+        .where(CoachCheckIn.user_id == user_id, CoachCheckIn.check_in_date == target_date)
         .limit(1)
     )
     if not row:
-        row = CoachCheckIn(user_id=user_id, check_in_date=local_now.date())
+        row = CoachCheckIn(user_id=user_id, check_in_date=target_date)
         session.add(row)
 
     row.sleep_hours = sleep_hours

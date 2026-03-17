@@ -6,6 +6,7 @@ import { EChart } from '../../components/charts/echart'
 import { ActionButton, DataList, DraftStatusBanner, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api, type AssistantCoachAdvice } from '../../lib/api'
 import { useDraftState } from '../../lib/draft-store'
+import { invalidateCheckInQueries } from '../../lib/query-invalidations'
 import { queryClient } from '../../lib/query-client'
 import { useWeightUnit } from '../../lib/user-preferences'
 import { convertMassFromKg, formatMass, formatMassRate, getWeightUnitLabel } from '../../lib/weight-units'
@@ -134,10 +135,7 @@ export function CoachPage() {
     }),
     onSuccess: async () => {
       checkInDraftState.meta.clearDraft()
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-      ])
+      await invalidateCheckInQueries()
     },
   })
 
