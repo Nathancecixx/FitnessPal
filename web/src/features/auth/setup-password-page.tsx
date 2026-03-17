@@ -21,14 +21,14 @@ export function SetupPasswordPage() {
   })
 
   if (!token) {
-    return <EmptyState title="Setup token missing" body="Open the full password setup link from the admin account, including the token in the URL." />
+    return <EmptyState title="Setup token missing" body="Open the full setup link." />
   }
 
   return (
     <div className="mx-auto flex min-h-[70vh] max-w-lg items-center">
       <Panel
         title="Set your password"
-        subtitle="This link is issued by an admin account. Once you save a password, this browser session signs in as your new user."
+        subtitle="This link signs you into your new account."
         className="w-full"
       >
         <form className="grid gap-4" onSubmit={(event) => {

@@ -73,6 +73,7 @@ export type FoodItem = {
   notes?: string | null
   is_favorite?: boolean
   tags_json: string[]
+  created_at?: string
 }
 
 export type FoodImportDraft = {
@@ -995,11 +996,12 @@ export const api = {
   updateAiFeatures: (items: Record<string, unknown>[]) => request<{ items: AiFeatureBinding[] }>('/ai/features', { method: 'PUT', body: JSON.stringify({ items }) }),
   getAiPersona: () => request<{ persona: AiPersonaConfig }>('/ai/persona'),
   updateAiPersona: (payload: Record<string, unknown>) => request<{ persona: AiPersonaConfig }>('/ai/persona', { method: 'PUT', body: JSON.stringify(payload) }),
-  listFoods: (params?: string | ({ search?: string } & CursorListParams)) => {
+  listFoods: (params?: string | ({ search?: string; favorites_only?: boolean } & CursorListParams)) => {
     const normalized = typeof params === 'string' ? { search: params } : (params ?? {})
     return request<PagedListResponse<FoodItem>>(`/foods${buildQueryString(normalized)}`)
   },
   createFood: (payload: Partial<FoodItem> & { name: string }) => request<FoodItem>('/foods', { method: 'POST', body: JSON.stringify(payload) }),
+  updateFood: (foodId: string, payload: Partial<FoodItem>) => request<FoodItem>(`/foods/${foodId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   lookupBarcode: (barcode: string) => request<FoodImportDraft>(`/foods/barcode-lookup/${encodeURIComponent(barcode)}`),
   scanFoodLabel: async (file: File) => {
     const formData = new FormData()

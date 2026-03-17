@@ -3,17 +3,18 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { StatCard, TinyLineChart } from '../../components/cards/stat-card'
-import { ActionButton, EmptyState, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
+import { ActionButton, DraftStatusBanner, EmptyState, ErrorState, LabelledTextArea, LoadingState, PageIntro, Panel } from '../../components/ui'
 import { api, type AssistantDraft } from '../../lib/api'
+import { useDraftState } from '../../lib/draft-store'
 import { queryClient } from '../../lib/query-client'
 import { useWeightUnit } from '../../lib/user-preferences'
 import { convertMassFromKg, formatMass, formatMassRate, getWeightUnitLabel, type WeightUnit } from '../../lib/weight-units'
 
 const quickActions = [
-  { to: '/nutrition', title: 'Log food', subtitle: 'Meal, photo, recipe, or template', accent: 'amber' },
-  { to: '/training', title: 'Log workout', subtitle: 'Sets first, details second', accent: 'sky' },
-  { to: '/weight', title: 'Log weight', subtitle: 'Fast weigh-in with optional extras', accent: 'rose' },
-  { to: '/templates', title: 'Use repeats', subtitle: 'Meals and sessions you do often', accent: 'lime' },
+  { to: '/nutrition', title: 'Log food', subtitle: 'Meals and photos', accent: 'amber' },
+  { to: '/training', title: 'Log workout', subtitle: 'Sets and lifts', accent: 'sky' },
+  { to: '/weight', title: 'Log weight', subtitle: 'Fast trend check', accent: 'rose' },
+  { to: '/templates', title: 'Use repeats', subtitle: 'Saved meals and lifts', accent: 'lime' },
 ] as const
 
 function formatCoachBody(body: string | null | undefined) {
@@ -43,13 +44,15 @@ export function DashboardPage() {
   const insightsQuery = useQuery({ queryKey: ['insights-summary'], queryFn: () => api.getInsightSummary(90) })
   const feedQuery = useQuery({ queryKey: ['assistant-feed'], queryFn: api.getAssistantFeed, retry: false })
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
-  const [assistantNote, setAssistantNote] = useState(() => buildDefaultAssistantNote(weightUnit))
+  const assistantDraftState = useDraftState({ formId: 'dashboard-assistant-note', initialValue: buildDefaultAssistantNote(weightUnit), route: '/' })
+  const assistantNote = assistantDraftState.value
+  const setAssistantNote = assistantDraftState.setValue
   const [assistantResult, setAssistantResult] = useState<Awaited<ReturnType<typeof api.parseAssistantNote>> | null>(null)
 
   useEffect(() => {
     const defaultNotes = new Set([buildDefaultAssistantNote('kg'), buildDefaultAssistantNote('lbs')])
     setAssistantNote((current) => defaultNotes.has(current) ? buildDefaultAssistantNote(weightUnit) : current)
-  }, [weightUnit])
+  }, [setAssistantNote, weightUnit])
 
   const cards = (dashboardQuery.data?.cards ?? []).map((card) => {
     if (card.key === 'weight-trend') {
@@ -69,11 +72,19 @@ export function DashboardPage() {
 
     return card
   })
+
   const insights = insightsQuery.data?.summary
   const feed = feedQuery.data?.feed
   const brief = feed?.brief
   const calorieSeries = Object.values(insights?.nutrition.daily_calories ?? {}).slice(-7)
   const weightSeries = (insights?.body.trend_7 ?? []).map((value) => convertMassFromKg(value, weightUnit))
+  const assistantNoteError = assistantNote.trim() ? '' : 'Add a quick note before drafting actions.'
+  const todayStatusCards = feed ? [
+    { label: 'Food', complete: feed.freshness.meals_logged_today, route: '/nutrition', cta: 'Log food', detail: feed.freshness.meals_logged_today ? 'Meal logging is fresh today.' : 'No meals logged yet today.' },
+    { label: 'Weight', complete: feed.freshness.weight_logged_today, route: '/weight', cta: 'Log weight', detail: feed.freshness.weight_logged_today ? 'Today already has a weigh-in.' : 'Today still needs a weigh-in.' },
+    { label: 'Check-in', complete: feed.freshness.check_in_completed_today, route: '/coach', cta: 'Save check-in', detail: feed.freshness.check_in_completed_today ? 'Coach has today’s recovery context.' : 'Coach check-in is still missing.' },
+    { label: 'Workout', complete: feed.freshness.workout_logged_last_72h, route: '/training', cta: 'Log workout', detail: feed.freshness.workout_logged_last_72h ? 'Training activity is recent enough for coaching.' : 'No workout in the last 72 hours.' },
+  ] : []
 
   const parseAssistant = useMutation({
     mutationFn: () => api.parseAssistantNote(assistantNote),
@@ -137,6 +148,7 @@ export function DashboardPage() {
       return api.createWorkoutSession({ notes: draft.payload.notes, sets })
     },
     onSuccess: async (_, draft) => {
+      assistantDraftState.meta.clearDraft()
       setAssistantResult((current) => current
         ? { ...current, drafts: current.drafts.filter((item) => item !== draft) }
         : current)
@@ -160,7 +172,7 @@ export function DashboardPage() {
       <PageIntro
         eyebrow="Today"
         title="Quick check-in"
-        description="Make the common stuff frictionless: log food, add sets, check your weight trend, and only open the deeper builders when you need them."
+        description="Log food, training, weight, and check-ins from one place."
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -177,31 +189,77 @@ export function DashboardPage() {
         ))}
       </div>
 
+      <Panel title="Today status" subtitle="What still needs logging.">
+        {feedQuery.isLoading ? (
+          <LoadingState title="Checking today’s status" body="Loading your latest logs." />
+        ) : feedQuery.isError ? (
+          <ErrorState title="Could not load today’s status" body={feedQuery.error.message} action={<ActionButton onClick={() => feedQuery.refetch()} className="w-auto">Retry</ActionButton>} />
+        ) : (
+          <div className="space-y-3">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {todayStatusCards.map((item) => (
+                <div key={item.label} className={`rounded-[24px] border px-4 py-4 ${item.complete ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-slate-200'}`}>
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{item.label}</div>
+                  <div className="mt-2 font-display text-2xl text-slate-950">{item.complete ? 'Ready' : 'Needs input'}</div>
+                  <div className="mt-2 text-sm leading-6 text-slate-600">{item.detail}</div>
+                  {!item.complete ? (
+                    <Link to={item.route} className="mt-4 inline-flex min-h-[42px] items-center rounded-full bg-slate-950 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-canvas">
+                      {item.cta}
+                    </Link>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            {feed?.freshness.stale_signals.length ? (
+              <div className="space-y-2">
+                {feed.freshness.stale_signals.map((signal) => (
+                  <div key={signal} className="app-status app-status-warning rounded-[22px] px-4 py-3 text-sm">
+                    {signal}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
+      </Panel>
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.8fr)]">
         <div className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {cards.map((card) => <StatCard key={card.key} card={card} />)}
-          </div>
-          {cards.length === 0 ? <EmptyState title="No dashboard data yet" body="Log your first meal, workout, or weigh-in to populate the live summary cards." /> : null}
+          {dashboardQuery.isLoading ? (
+            <LoadingState title="Loading dashboard cards" body="Loading your latest summary." />
+          ) : dashboardQuery.isError ? (
+            <ErrorState title="Could not load dashboard cards" body={dashboardQuery.error.message} action={<ActionButton onClick={() => dashboardQuery.refetch()} className="w-auto">Retry</ActionButton>} />
+          ) : (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {cards.map((card) => <StatCard key={card.key} card={card} />)}
+              </div>
+              {cards.length === 0 ? <EmptyState title="No dashboard data yet" body="Log a meal, workout, or weigh-in to get started." /> : null}
+            </>
+          )}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <TinyLineChart title="7-day calories" points={calorieSeries.length ? calorieSeries : [0]} color="#d97706" />
             <TinyLineChart title={`7-day weight trend (${weightUnitLabel})`} points={weightSeries.length ? weightSeries : [0]} color="#fb7185" />
           </div>
 
-          <Panel title="Assistant quick capture" subtitle="Turn a free-form note into reviewable drafts before anything gets written.">
+          <Panel title="Assistant quick capture" subtitle="Turn a quick note into drafts.">
             <div className="space-y-3">
+              <DraftStatusBanner restored={assistantDraftState.meta.restored} savedAt={assistantDraftState.meta.savedAt} onDiscard={assistantDraftState.meta.clearDraft} />
               <LabelledTextArea
                 label="Natural-language note"
                 value={assistantNote}
                 onChange={setAssistantNote}
                 rows={4}
+                error={assistantNoteError || undefined}
                 placeholder={weightUnit === 'lbs'
                   ? 'Ate dinner for 720 kcal with 55P 70C 18F, and weighed 181.7 lbs this morning'
                   : 'Ate dinner for 720 kcal with 55P 70C 18F, and weighed 82.4 kg this morning'}
               />
               <div className="flex flex-wrap gap-2">
-                <ActionButton onClick={() => parseAssistant.mutate()}>{parseAssistant.isPending ? 'Parsing...' : 'Draft actions'}</ActionButton>
+                <ActionButton onClick={() => parseAssistant.mutate()} disabled={parseAssistant.isPending || Boolean(assistantNoteError)}>
+                  {parseAssistant.isPending ? 'Parsing...' : 'Draft actions'}
+                </ActionButton>
               </div>
               {parseAssistant.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{parseAssistant.error.message}</div> : null}
               {assistantResult?.warnings?.length ? (
@@ -232,49 +290,55 @@ export function DashboardPage() {
 
         <Panel
           title={feed?.top_focus.title ?? 'Coach preview'}
-          subtitle={brief ? `${brief.persona_name} keeps the next useful move visible.` : 'Keep the next useful action visible without turning the app into homework.'}
+          subtitle={brief ? `${brief.persona_name} on deck.` : 'Your next move.'}
           action={(
             <ActionButton tone="secondary" className="w-auto" onClick={() => refreshFeed.mutate()} disabled={refreshFeed.isPending || !insights}>
               {refreshFeed.isPending ? 'Refreshing...' : 'Refresh coach'}
             </ActionButton>
           )}
         >
-          <div className="space-y-3">
-            {feed ? (
-              <div className="rounded-[24px] bg-slate-950 px-4 py-4 text-canvas">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-lime-300/75">Top focus</div>
-                <div className="mt-3 font-display text-2xl">{feed.top_focus.title}</div>
-                <div className="mt-2 text-sm leading-6 text-slate-300">{feed.top_focus.summary}</div>
-                <div className="mt-4">
-                  <Link
-                    to={feed.top_focus.route}
-                    className="inline-flex min-h-[42px] items-center rounded-full bg-lime px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-950"
-                  >
-                    {feed.top_focus.cta_label}
-                  </Link>
+          {feedQuery.isLoading ? (
+            <LoadingState title="Loading coach preview" body="Loading the latest read." />
+          ) : feedQuery.isError ? (
+            <ErrorState title="Coach preview unavailable" body={feedQuery.error.message} action={<ActionButton onClick={() => feedQuery.refetch()} className="w-auto">Retry</ActionButton>} />
+          ) : (
+            <div className="space-y-3">
+              {feed ? (
+                <div className="rounded-[24px] bg-slate-950 px-4 py-4 text-canvas">
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-lime-300/75">Top focus</div>
+                  <div className="mt-3 font-display text-2xl">{feed.top_focus.title}</div>
+                  <div className="mt-2 text-sm leading-6 text-slate-300">{feed.top_focus.summary}</div>
+                  <div className="mt-4">
+                    <Link
+                      to={feed.top_focus.route}
+                      className="inline-flex min-h-[42px] items-center rounded-full bg-lime px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-950"
+                    >
+                      {feed.top_focus.cta_label}
+                    </Link>
+                  </div>
                 </div>
-              </div>
-            ) : null}
-            {brief?.body_markdown ? (
-              <div className="whitespace-pre-line rounded-[20px] bg-slate-100 px-4 py-4 text-sm leading-6 text-slate-700">
-                {formatCoachBody(brief.body_markdown)}
-              </div>
-            ) : null}
-            {(feed?.actions?.length ? feed.actions : (insights?.recommendations ?? []).slice(0, 4)).slice(0, 2).map((note) => (
-              <div key={note} className="rounded-[20px] bg-slate-950 px-4 py-3 text-sm leading-6 text-canvas">
-                {note}
-              </div>
-            ))}
-            {feed?.watchouts?.length ? (
-              <div className="app-status app-status-warning rounded-[20px] px-4 py-4 text-sm leading-6">
-                {feed.watchouts[0]}
-              </div>
-            ) : null}
-            {refreshFeed.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{refreshFeed.error.message}</div> : null}
-            {!feed && !insights?.recommendations?.length ? (
-              <EmptyState title="No recommendations yet" body="As soon as the app has enough meals, workouts, and weigh-ins it will start surfacing a proactive coach preview here." />
-            ) : null}
-          </div>
+              ) : null}
+              {brief?.body_markdown ? (
+                <div className="whitespace-pre-line rounded-[20px] bg-slate-100 px-4 py-4 text-sm leading-6 text-slate-700">
+                  {formatCoachBody(brief.body_markdown)}
+                </div>
+              ) : null}
+              {(feed?.actions?.length ? feed.actions : (insights?.recommendations ?? []).slice(0, 4)).slice(0, 2).map((note) => (
+                <div key={note} className="rounded-[20px] bg-slate-950 px-4 py-3 text-sm leading-6 text-canvas">
+                  {note}
+                </div>
+              ))}
+              {feed?.watchouts?.length ? (
+                <div className="app-status app-status-warning rounded-[20px] px-4 py-4 text-sm leading-6">
+                  {feed.watchouts[0]}
+                </div>
+              ) : null}
+              {refreshFeed.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{refreshFeed.error.message}</div> : null}
+              {!feed && !insights?.recommendations?.length ? (
+                <EmptyState title="No recommendations yet" body="More guidance will show up as you log." />
+              ) : null}
+            </div>
+          )}
 
           <div className="mt-5 grid gap-3 rounded-[24px] bg-slate-100 p-4 sm:grid-cols-3">
             <div>

@@ -3,8 +3,9 @@ import { useEffect, useState } from 'react'
 
 import { CoachNudgePanel, filterCoachNudges } from '../../components/coach-panels'
 import { EChart } from '../../components/charts/echart'
-import { ActionButton, DataList, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
+import { ActionButton, DataList, DraftStatusBanner, EmptyState, LabelledInput, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api, type AssistantCoachAdvice } from '../../lib/api'
+import { useDraftState } from '../../lib/draft-store'
 import { queryClient } from '../../lib/query-client'
 import { useWeightUnit } from '../../lib/user-preferences'
 import { convertMassFromKg, formatMass, formatMassRate, getWeightUnitLabel } from '../../lib/weight-units'
@@ -88,8 +89,12 @@ export function CoachPage() {
   const weightUnitLabel = getWeightUnitLabel(weightUnit)
   const insightsQuery = useQuery({ queryKey: ['insights-summary'], queryFn: () => api.getInsightSummary(90) })
   const feedQuery = useQuery({ queryKey: ['assistant-feed'], queryFn: api.getAssistantFeed })
-  const [coachPrompt, setCoachPrompt] = useState<string>(defaultCoachPrompts[0])
-  const [checkInDraft, setCheckInDraft] = useState<CheckInDraft>(createCheckInDraft)
+  const coachPromptState = useDraftState<string>({ formId: 'coach-prompt', initialValue: defaultCoachPrompts[0], route: '/coach' })
+  const coachPrompt = coachPromptState.value
+  const setCoachPrompt = coachPromptState.setValue
+  const checkInDraftState = useDraftState<CheckInDraft>({ formId: 'coach-check-in', initialValue: createCheckInDraft(), route: '/coach' })
+  const checkInDraft = checkInDraftState.value
+  const setCheckInDraft = checkInDraftState.setValue
 
   useEffect(() => {
     const checkIn = feedQuery.data?.feed.today_check_in
@@ -128,6 +133,7 @@ export function CoachPage() {
       note: checkInDraft.note || null,
     }),
     onSuccess: async () => {
+      checkInDraftState.meta.clearDraft()
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['assistant-feed'] }),
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
@@ -155,6 +161,10 @@ export function CoachPage() {
   const calorieEntries = Object.entries(payload?.nutrition.daily_calories ?? {})
   const coachNudges = filterCoachNudges(feed?.nudges, 'coach')
   const coachPrompts = feed?.quick_prompts.length ? feed.quick_prompts : [...defaultCoachPrompts]
+  const checkInError = [checkInDraft.readiness_1_5, checkInDraft.soreness_1_5, checkInDraft.hunger_1_5]
+    .some((value) => value && (Number(value) < 1 || Number(value) > 5))
+    ? 'Readiness, soreness, and hunger must stay between 1 and 5.'
+    : ''
 
   if (!feed) {
     return (
@@ -162,14 +172,14 @@ export function CoachPage() {
         <PageIntro
           eyebrow="Coach"
           title="Coach hub"
-          description="Loading the shared coach feed..."
+          description="Loading coach..."
           actions={(
             <ActionButton onClick={() => refreshFeed.mutate()} disabled={refreshFeed.isPending}>
               {refreshFeed.isPending ? 'Refreshing...' : 'Refresh coach'}
             </ActionButton>
           )}
         />
-        <EmptyState title="Coach feed loading" body="As soon as the feed is ready, this page will bring together your next focus, nudges, and tailored advice." />
+        <EmptyState title="Coach feed loading" body="Your coach view will show up here." />
       </div>
     )
   }
@@ -196,7 +206,7 @@ export function CoachPage() {
       <PageIntro
         eyebrow="Coach"
         title={brief?.persona_name ?? 'FitnessPal Coach'}
-        description={brief?.persona_tagline ?? 'A proactive coach layer that keeps the next useful move obvious without turning the app into homework.'}
+        description={brief?.persona_tagline ?? 'Clear next steps, kept simple.'}
         actions={(
           <ActionButton tone="secondary" onClick={() => refreshFeed.mutate()} disabled={refreshFeed.isPending}>
             {refreshFeed.isPending ? 'Refreshing...' : 'Refresh coach'}
@@ -277,37 +287,41 @@ export function CoachPage() {
         <div className="space-y-4">
           <Panel
             title={feed.today_check_in?.is_today ? "Today's check-in" : 'Daily check-in'}
-            subtitle="A few quick recovery and appetite signals make the coach meaningfully more personal without creating homework."
+            subtitle="A quick daily read."
           >
             <form
               className="space-y-4"
               onSubmit={(event) => {
                 event.preventDefault()
-                saveCheckIn.mutate()
+                if (!checkInError) {
+                  saveCheckIn.mutate()
+                }
               }}
             >
+              <DraftStatusBanner restored={checkInDraftState.meta.restored} savedAt={checkInDraftState.meta.savedAt} onDiscard={checkInDraftState.meta.clearDraft} />
               <div className="grid gap-3 sm:grid-cols-2">
                 <LabelledInput label="Sleep hours" type="number" step="0.1" value={checkInDraft.sleep_hours} onChange={(value) => setCheckInDraft((current) => ({ ...current, sleep_hours: value }))} placeholder="7.5" />
                 <LabelledInput label="Readiness (1-5)" type="number" value={checkInDraft.readiness_1_5} onChange={(value) => setCheckInDraft((current) => ({ ...current, readiness_1_5: value }))} placeholder="4" />
                 <LabelledInput label="Soreness (1-5)" type="number" value={checkInDraft.soreness_1_5} onChange={(value) => setCheckInDraft((current) => ({ ...current, soreness_1_5: value }))} placeholder="2" />
                 <LabelledInput label="Hunger (1-5)" type="number" value={checkInDraft.hunger_1_5} onChange={(value) => setCheckInDraft((current) => ({ ...current, hunger_1_5: value }))} placeholder="3" />
               </div>
-              <LabelledTextArea label="Note" value={checkInDraft.note} onChange={(value) => setCheckInDraft((current) => ({ ...current, note: value }))} rows={3} placeholder="Low sleep, high stress, flat in the gym, appetite strong, etc." />
+              <LabelledTextArea label="Note" value={checkInDraft.note} onChange={(value) => setCheckInDraft((current) => ({ ...current, note: value }))} rows={3} placeholder="Low sleep, high stress, strong appetite" />
               <div className="flex flex-wrap gap-2">
-                <ActionButton type="submit" disabled={saveCheckIn.isPending}>{saveCheckIn.isPending ? 'Saving...' : 'Save check-in'}</ActionButton>
+                <ActionButton type="submit" disabled={saveCheckIn.isPending || Boolean(checkInError)}>{saveCheckIn.isPending ? 'Saving...' : 'Save check-in'}</ActionButton>
                 {feed.today_check_in ? (
                   <div className="rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">
                     {feed.today_check_in.is_today ? 'Saved for today' : `Last saved ${new Date(feed.today_check_in.updated_at).toLocaleDateString()}`}
                   </div>
                 ) : null}
               </div>
+              {checkInError ? <div className="app-status app-status-danger rounded-[22px] px-4 py-3 text-sm">{checkInError}</div> : null}
               {saveCheckIn.isError ? <div className="app-status app-status-danger rounded-[22px] px-4 py-3 text-sm">{saveCheckIn.error.message}</div> : null}
             </form>
           </Panel>
 
           <Panel
             title="Ask your coach"
-            subtitle="Each answer gets the live coach feed, latest trends, recent meals, recent workouts, recent weigh-ins, goals, and today's check-in."
+            subtitle="Ask anything about your current data."
           >
             <form
               className="space-y-4"
@@ -316,12 +330,13 @@ export function CoachPage() {
                 runCoachPrompt(coachPrompt)
               }}
             >
+              <DraftStatusBanner restored={coachPromptState.meta.restored} savedAt={coachPromptState.meta.savedAt} onDiscard={coachPromptState.meta.clearDraft} />
               <LabelledTextArea
                 label="Prompt"
                 value={coachPrompt}
                 onChange={setCoachPrompt}
                 rows={5}
-                placeholder="Example: I have an upper session tomorrow and my weight is drifting down. What should I change?"
+                placeholder="Example: Weight is drifting down. What should I change?"
               />
 
               <div className="flex flex-wrap gap-2">
@@ -360,13 +375,13 @@ export function CoachPage() {
         <div className="space-y-4">
           <CoachNudgePanel
             title="Coach nudges"
-            subtitle="The proactive cues that should change what you do next, not just what you think."
+            subtitle="Extra signals."
             nudges={coachNudges}
             emptyTitle="No coach nudges right now"
-            emptyBody="The coach will surface extra nudges here as soon as your logs or check-ins suggest a more specific course correction."
+            emptyBody="Extra nudges will show up here when needed."
           />
 
-          <Panel title="Nutrition and trend charts" subtitle={`Coach timezone: ${feed.freshness.timezone}`}>
+          <Panel title="Nutrition and trend charts" subtitle={`TZ: ${feed.freshness.timezone}`}>
             {payload ? (
               <div className="grid gap-4 lg:grid-cols-2">
                 <EChart
@@ -401,13 +416,13 @@ export function CoachPage() {
                 />
               </div>
             ) : (
-              <EmptyState title="No snapshot yet" body="The charts will start filling in as soon as meals, workouts, and weigh-ins are logged." />
+              <EmptyState title="No snapshot yet" body="Log more data to fill the charts." />
             )}
           </Panel>
         </div>
 
         <div className="space-y-4">
-          <Panel title="Freshness" subtitle="The coach is only as useful as the inputs it can trust right now.">
+          <Panel title="Freshness" subtitle="How current the data is.">
             {feed.freshness.stale_signals.length ? (
               <div className="space-y-3">
                 {feed.freshness.stale_signals.map((signal) => (
@@ -417,11 +432,11 @@ export function CoachPage() {
                 ))}
               </div>
             ) : (
-              <EmptyState title="Fresh enough to coach" body="Today's key inputs are up to date, so the coach can stay specific instead of generic." />
+              <EmptyState title="Fresh enough to coach" body="Today’s key inputs are up to date." />
             )}
           </Panel>
 
-          <Panel title="Coach stats" subtitle="A compact read of what the coach is optimizing around today.">
+          <Panel title="Coach stats" subtitle="Compact view.">
             <DataList rows={coachRows} />
           </Panel>
         </div>

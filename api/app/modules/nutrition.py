@@ -47,6 +47,22 @@ class FoodCreate(BaseModel):
     tags_json: list[str] = Field(default_factory=list)
 
 
+class FoodUpdate(BaseModel):
+    name: str | None = None
+    brand: str | None = None
+    serving_name: str | None = None
+    calories: float | None = None
+    protein_g: float | None = None
+    carbs_g: float | None = None
+    fat_g: float | None = None
+    fiber_g: float | None = None
+    sugar_g: float | None = None
+    sodium_mg: float | None = None
+    notes: str | None = None
+    is_favorite: bool | None = None
+    tags_json: list[str] | None = None
+
+
 class RecipeItemInput(BaseModel):
     food_id: str
     grams: float
@@ -113,6 +129,7 @@ def list_foods(
     actor: Actor = Depends(nutrition_read),
     session: Session = Depends(get_session),
     search: str | None = None,
+    favorites_only: bool = False,
     limit: int = 50,
     cursor: str | None = None,
 ) -> dict[str, Any]:
@@ -123,6 +140,8 @@ def list_foods(
     )
     if search:
         query = query.where(or_(FoodItem.name.ilike(f"%{search}%"), FoodItem.brand.ilike(f"%{search}%")))
+    if favorites_only:
+        query = query.where(FoodItem.is_favorite.is_(True))
     if cursor:
         cursor_name, cursor_id = decode_cursor(cursor)
         query = query.where(ascending_cursor_filter(FoodItem.name, FoodItem.id, cursor_name, cursor_id))
@@ -156,6 +175,22 @@ def create_food(
 @router.get("/foods/{food_id}")
 def get_food(food_id: str, actor: Actor = Depends(nutrition_read), session: Session = Depends(get_session)) -> dict[str, Any]:
     row = ensure_owned(session, FoodItem, food_id, actor.user_id, "Food not found.")
+    return serialize_food(row)
+
+
+@router.patch("/foods/{food_id}")
+def update_food(
+    food_id: str,
+    payload: FoodUpdate,
+    actor: Actor = Depends(nutrition_write),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = ensure_owned(session, FoodItem, food_id, actor.user_id, "Food not found.")
+    for field_name in payload.model_fields_set:
+        setattr(row, field_name, getattr(payload, field_name))
+    session.commit()
+    session.refresh(row)
+    write_audit(session, actor, "food.updated", "food", row.id, payload.model_dump(exclude_unset=True))
     return serialize_food(row)
 
 

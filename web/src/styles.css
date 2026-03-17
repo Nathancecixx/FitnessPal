@@ -323,6 +323,12 @@ button {
   color: var(--danger-text);
 }
 
+.app-status-info {
+  background: var(--info-bg);
+  border-color: var(--info-border);
+  color: var(--info-text);
+}
+
 .app-status-success {
   background: var(--success-bg);
   border-color: var(--success-border);

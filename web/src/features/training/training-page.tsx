@@ -2,8 +2,9 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { CoachNudgePanel, filterCoachNudges } from '../../components/coach-panels'
-import { ActionButton, EmptyState, LabelledInput, LabelledSelect, PageIntro, Panel } from '../../components/ui'
+import { ActionButton, ConfirmSheet, type ConfirmSheetRequest, DraftStatusBanner, EmptyState, ErrorState, LabelledInput, LabelledSelect, LoadingState, PageIntro, Panel } from '../../components/ui'
 import { api, type Routine, type WorkoutSession, type WorkoutTemplate } from '../../lib/api'
+import { useDraftState } from '../../lib/draft-store'
 import { queryClient } from '../../lib/query-client'
 import { useWeightUnit } from '../../lib/user-preferences'
 import { convertMassToKg, formatMass, formatMassInput, getWeightUnitLabel, type WeightUnit } from '../../lib/weight-units'
@@ -147,12 +148,30 @@ function summarizeSession(session: WorkoutSession, exerciseNameById: Record<stri
     .join(' / ')
 }
 
+function toStartOfDayIso(value: string) {
+  return value ? `${value}T00:00:00` : undefined
+}
+
+function toEndOfDayIso(value: string) {
+  return value ? `${value}T23:59:59` : undefined
+}
+
 export function TrainingPage() {
   const weightUnit = useWeightUnit()
   const weightUnitLabel = getWeightUnitLabel(weightUnit)
   const feedQuery = useQuery({ queryKey: ['assistant-feed'], queryFn: api.getAssistantFeed, retry: false })
+  const [exerciseSearch, setExerciseSearch] = useState('')
+  const [sessionFilters, setSessionFilters] = useState({ date_from: '', date_to: '', template_id: '' })
   const exercisesQuery = useQuery({ queryKey: ['exercises'], queryFn: api.listExercises })
-  const sessionsQuery = useQuery({ queryKey: ['workout-sessions'], queryFn: () => api.listWorkoutSessions({ limit: 12 }) })
+  const sessionsQuery = useQuery({
+    queryKey: ['workout-sessions', sessionFilters.date_from, sessionFilters.date_to, sessionFilters.template_id],
+    queryFn: () => api.listWorkoutSessions({
+      limit: 12,
+      date_from: toStartOfDayIso(sessionFilters.date_from),
+      date_to: toEndOfDayIso(sessionFilters.date_to),
+      template_id: sessionFilters.template_id || undefined,
+    }),
+  })
   const routinesQuery = useQuery({ queryKey: ['routines'], queryFn: api.listRoutines })
   const templatesQuery = useQuery({ queryKey: ['workout-templates'], queryFn: api.listWorkoutTemplates })
   const [selectedExerciseId, setSelectedExerciseId] = useState('')
@@ -162,21 +181,34 @@ export function TrainingPage() {
     rep_target_max: '10',
     load_increment: defaultLoadIncrementForUnit('kg'),
   })
-  const [sessionDraft, setSessionDraft] = useState({
-    routine_id: '',
-    notes: '',
-    perceived_energy: '',
-    bodyweight_kg: '',
-    blocks: [createSessionBlockDraft()],
+  const sessionDraftState = useDraftState({
+    formId: 'training-session-draft',
+    initialValue: {
+      routine_id: '',
+      notes: '',
+      perceived_energy: '',
+      bodyweight_kg: '',
+      blocks: [createSessionBlockDraft()],
+    },
+    route: '/training',
   })
-  const [routineDraft, setRoutineDraft] = useState<RoutineDraft>({
-    name: '',
-    goal: '',
-    schedule_notes: '',
-    notes: '',
-    items: [createRoutineExerciseDraft()],
+  const sessionDraft = sessionDraftState.value
+  const setSessionDraft = sessionDraftState.setValue
+  const routineDraftState = useDraftState<RoutineDraft>({
+    formId: 'training-routine-draft',
+    initialValue: {
+      name: '',
+      goal: '',
+      schedule_notes: '',
+      notes: '',
+      items: [createRoutineExerciseDraft()],
+    },
+    route: '/training',
   })
+  const routineDraft = routineDraftState.value
+  const setRoutineDraft = routineDraftState.setValue
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmSheetRequest | null>(null)
 
   useEffect(() => {
     setExerciseDraft((current) => (
@@ -203,7 +235,8 @@ export function TrainingPage() {
     [sessionDraft.blocks],
   )
 
-  const quickExercises = useMemo(() => exercises.slice(0, 8), [exercises])
+  const filteredExercises = useMemo(() => exercises.filter((exercise) => exercise.name.toLowerCase().includes(exerciseSearch.toLowerCase())), [exerciseSearch, exercises])
+  const quickExercises = useMemo(() => filteredExercises.slice(0, 12), [filteredExercises])
   const quickRoutines = useMemo(() => routines.slice(0, 4), [routines])
   const recentSessions = useMemo(() => sessions.slice(0, 4), [sessions])
   const quickTemplates = useMemo(() => templates.slice(0, 4), [templates])
@@ -260,13 +293,7 @@ export function TrainingPage() {
         })),
     }),
     onSuccess: async () => {
-      setRoutineDraft({
-        name: '',
-        goal: '',
-        schedule_notes: '',
-        notes: '',
-        items: [createRoutineExerciseDraft()],
-      })
+      routineDraftState.meta.clearDraft()
       await queryClient.invalidateQueries({ queryKey: ['routines'] })
     },
   })
@@ -296,13 +323,7 @@ export function TrainingPage() {
       sets: expandBlocksToSets(sessionDraft.blocks, weightUnit),
     })),
     onSuccess: async () => {
-      setSessionDraft({
-        routine_id: '',
-        notes: '',
-        perceived_energy: '',
-        bodyweight_kg: '',
-        blocks: [createSessionBlockDraft()],
-      })
+      sessionDraftState.meta.clearDraft()
       setEditingSessionId(null)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
@@ -319,13 +340,7 @@ export function TrainingPage() {
     onSuccess: async (_, sessionId) => {
       if (editingSessionId === sessionId) {
         setEditingSessionId(null)
-        setSessionDraft({
-          routine_id: '',
-          notes: '',
-          perceived_energy: '',
-          bodyweight_kg: '',
-          blocks: [createSessionBlockDraft()],
-        })
+        sessionDraftState.meta.clearDraft()
       }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['workout-sessions'] }),
@@ -411,6 +426,24 @@ export function TrainingPage() {
     }
   }
 
+  const sessionHasValidBlock = sessionDraft.blocks.some((block) =>
+    Boolean(block.exercise_id) && Number(block.target_sets) > 0 && Number(block.reps) > 0 && Number(block.load_kg) >= 0)
+  const sessionBodyweightError = sessionDraft.bodyweight_kg && Number(sessionDraft.bodyweight_kg) <= 0
+    ? 'Bodyweight must be greater than zero.'
+    : ''
+  const sessionEnergyError = sessionDraft.perceived_energy && (Number(sessionDraft.perceived_energy) < 1 || Number(sessionDraft.perceived_energy) > 10)
+    ? 'Perceived energy must stay between 1 and 10.'
+    : ''
+  const exerciseDraftError = !exerciseDraft.name.trim()
+    ? 'Exercise name is required.'
+    : Number(exerciseDraft.rep_target_min) <= 0 || Number(exerciseDraft.rep_target_max) < Number(exerciseDraft.rep_target_min)
+      ? 'Rep max must be greater than or equal to rep min.'
+      : Number(exerciseDraft.load_increment) <= 0
+        ? 'Load jump must be greater than zero.'
+        : ''
+  const routineDraftError = !routineDraft.name.trim() || !routineDraft.items.some((item) => item.exercise_id)
+    ? 'Add a routine name and at least one exercise slot.'
+    : ''
   const progressionRecommendation = progressionQuery.data?.recommendation
   const selectedExercise = exercises.find((exercise) => exercise.id === selectedExerciseId)
 
@@ -419,20 +452,20 @@ export function TrainingPage() {
       <PageIntro
         eyebrow="Training"
         title="Log the workout while it is happening"
-        description="Start from a template, repeat the last session, or tap in a few lifts manually. The screen stays light for phone use, while progression defaults and extra detail stay close by when you need them."
+        description="Start from a template, repeat the last session, or log lifts manually."
       />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <div className="space-y-4">
           <CoachNudgePanel
             title="Coach cues"
-            subtitle="Keep the next training adjustment visible before the session gets buried under setup details."
+            subtitle="Quick training notes."
             nudges={trainingNudges}
             emptyTitle="No training cues right now"
-            emptyBody="As soon as readiness, stall signals, or the next-session setup matters, the coach will surface it here."
+            emptyBody="Coach notes will show up here when needed."
           />
 
-          <Panel title={"Start today's workout"} subtitle="Use the fastest path first, then fine-tune only what matters.">
+          <Panel title={"Start today's workout"} subtitle="Fast starts first.">
             <div className="space-y-4">
               <div className="space-y-3">
                 <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Quick starts</div>
@@ -481,7 +514,7 @@ export function TrainingPage() {
                   ))}
                 </div>
                 {!quickRoutines.length && !quickTemplates.length && !recentSessions.length ? (
-                  <EmptyState title="No quick starts yet" body="Create a few exercises, save a template, or log one session and this page becomes much faster to use." />
+                  <EmptyState title="No quick starts yet" body="Log a session or save a template to fill this in." />
                 ) : null}
               </div>
 
@@ -489,9 +522,12 @@ export function TrainingPage() {
                 className="space-y-4"
                 onSubmit={(event) => {
                   event.preventDefault()
-                  saveSession.mutate()
+                  if (sessionHasValidBlock && !sessionBodyweightError && !sessionEnergyError) {
+                    saveSession.mutate()
+                  }
                 }}
               >
+                <DraftStatusBanner restored={sessionDraftState.meta.restored} savedAt={sessionDraftState.meta.savedAt} onDiscard={() => { setEditingSessionId(null); sessionDraftState.meta.clearDraft() }} />
                 {sessionDraft.routine_id ? (
                   <div className="rounded-[20px] bg-lime/15 px-4 py-3 text-sm text-slate-700">
                     Routine session: {routineNameById[sessionDraft.routine_id] ?? 'Custom routine'}
@@ -501,8 +537,9 @@ export function TrainingPage() {
                   label={editingSessionId ? 'Session label or notes (editing)' : 'Session label or notes'}
                   value={sessionDraft.notes}
                   onChange={(value) => setSessionDraft((current) => ({ ...current, notes: value }))}
-                  placeholder="Push day, hotel gym, short upper session"
+                  placeholder="Push day, hotel gym, upper"
                 />
+                <LabelledInput label="Search exercises" value={exerciseSearch} onChange={setExerciseSearch} placeholder="Search exercises" />
 
                 <div className="space-y-3">
                   {sessionDraft.blocks.map((block, index) => {
@@ -530,13 +567,14 @@ export function TrainingPage() {
                             onChange={(value) => updateBlock(index, 'exercise_id', value)}
                             options={[
                               { label: 'Select exercise', value: '' },
-                              ...exercises.map((exerciseItem) => ({ label: exerciseItem.name, value: exerciseItem.id })),
+                              ...filteredExercises.map((exerciseItem) => ({ label: exerciseItem.name, value: exerciseItem.id })),
                             ]}
+                            error={!block.exercise_id ? 'Choose an exercise.' : undefined}
                           />
                           <div className="grid grid-cols-2 gap-3">
-                            <LabelledInput label="Sets" type="number" value={block.target_sets} onChange={(value) => updateBlock(index, 'target_sets', value)} />
-                            <LabelledInput label="Reps" type="number" value={block.reps} onChange={(value) => updateBlock(index, 'reps', value)} />
-                            <LabelledInput label={`Load ${weightUnitLabel}`} type="number" value={block.load_kg} onChange={(value) => updateBlock(index, 'load_kg', value)} />
+                            <LabelledInput label="Sets" type="number" value={block.target_sets} onChange={(value) => updateBlock(index, 'target_sets', value)} error={Number(block.target_sets) > 0 ? undefined : 'Sets must be greater than zero.'} />
+                            <LabelledInput label="Reps" type="number" value={block.reps} onChange={(value) => updateBlock(index, 'reps', value)} error={Number(block.reps) > 0 ? undefined : 'Reps must be greater than zero.'} />
+                            <LabelledInput label={`Load ${weightUnitLabel}`} type="number" value={block.load_kg} onChange={(value) => updateBlock(index, 'load_kg', value)} error={Number(block.load_kg) >= 0 ? undefined : 'Load cannot be negative.'} />
                             <LabelledInput label="RIR" type="number" value={block.rir} onChange={(value) => updateBlock(index, 'rir', value)} />
                           </div>
                           {exercise ? (
@@ -562,14 +600,16 @@ export function TrainingPage() {
                   >
                     Copy last lift
                   </ActionButton>
-                  <ActionButton type="submit" className="w-full sm:w-auto">{editingSessionId ? 'Save workout changes' : 'Log workout'}</ActionButton>
-                  {editingSessionId ? <ActionButton tone="secondary" onClick={() => { setEditingSessionId(null); setSessionDraft({ routine_id: '', notes: '', perceived_energy: '', bodyweight_kg: '', blocks: [createSessionBlockDraft()] }) }} className="w-full sm:w-auto">Cancel edit</ActionButton> : null}
+                  <ActionButton type="submit" className="w-full sm:w-auto" disabled={saveSession.isPending || !sessionHasValidBlock || Boolean(sessionBodyweightError) || Boolean(sessionEnergyError)}>
+                    {saveSession.isPending ? 'Saving...' : (editingSessionId ? 'Save workout changes' : 'Log workout')}
+                  </ActionButton>
+                  {editingSessionId ? <ActionButton tone="secondary" onClick={() => { setEditingSessionId(null); sessionDraftState.meta.clearDraft() }} className="w-full sm:w-auto">Cancel edit</ActionButton> : null}
                 </div>
 
                 <details className="rounded-[22px] border border-slate-200 bg-white">
                   <summary className="cursor-pointer list-none px-4 py-4">
                     <div className="font-semibold text-slate-950">Advanced session details</div>
-                    <div className="mt-1 text-sm text-slate-500">Optional readiness and bodyweight context for better coaching.</div>
+                    <div className="mt-1 text-sm text-slate-500">Optional recovery context.</div>
                   </summary>
                   <div className="border-t border-slate-200 px-4 py-4">
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -578,6 +618,7 @@ export function TrainingPage() {
                         type="number"
                         value={sessionDraft.perceived_energy}
                         onChange={(value) => setSessionDraft((current) => ({ ...current, perceived_energy: value }))}
+                        error={sessionEnergyError || undefined}
                       />
                       <LabelledInput
                         label={`Bodyweight ${weightUnitLabel}`}
@@ -585,6 +626,7 @@ export function TrainingPage() {
                         step="0.1"
                         value={sessionDraft.bodyweight_kg}
                         onChange={(value) => setSessionDraft((current) => ({ ...current, bodyweight_kg: value }))}
+                        error={sessionBodyweightError || undefined}
                       />
                     </div>
                   </div>
@@ -593,56 +635,93 @@ export function TrainingPage() {
             </div>
           </Panel>
 
-          <Panel title="Recent workouts" subtitle="Check what you actually did without opening a dense history view.">
-            <div className="space-y-3">
-              {recentSessions.map((session) => (
-                <div key={session.id} className="rounded-[24px] bg-slate-950 px-4 py-4 text-canvas">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="font-display text-xl">{session.notes || 'Workout session'}</div>
-                      <div className="mt-1 text-xs uppercase tracking-[0.2em] text-slate-400">{new Date(session.started_at).toLocaleString()}</div>
-                      {session.routine_id ? <div className="mt-2 text-sm text-slate-300">{routineNameById[session.routine_id] ?? 'Routine session'}</div> : null}
+          <Panel title="Recent workouts" subtitle="Latest sessions.">
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <LabelledInput label="From" type="date" value={sessionFilters.date_from} onChange={(value) => setSessionFilters((current) => ({ ...current, date_from: value }))} />
+                <LabelledInput label="To" type="date" value={sessionFilters.date_to} onChange={(value) => setSessionFilters((current) => ({ ...current, date_to: value }))} />
+                <LabelledSelect
+                  label="Template"
+                  value={sessionFilters.template_id}
+                  onChange={(value) => setSessionFilters((current) => ({ ...current, template_id: value }))}
+                  options={[
+                    { label: 'All templates', value: '' },
+                    ...templates.map((template) => ({ label: template.name, value: template.id })),
+                  ]}
+                />
+              </div>
+              {sessionsQuery.isLoading ? (
+                <LoadingState title="Loading workouts" body="Loading recent sessions." />
+              ) : sessionsQuery.isError ? (
+                <ErrorState title="Could not load recent workouts" body={sessionsQuery.error.message} action={<ActionButton onClick={() => sessionsQuery.refetch()} className="w-auto">Retry</ActionButton>} />
+              ) : (
+                <div className="space-y-3">
+                  {recentSessions.map((session) => (
+                    <div key={session.id} className="rounded-[24px] bg-slate-950 px-4 py-4 text-canvas">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-display text-xl">{session.notes || 'Workout session'}</div>
+                          <div className="mt-1 text-xs uppercase tracking-[0.2em] text-slate-400">{new Date(session.started_at).toLocaleString()}</div>
+                          {session.routine_id ? <div className="mt-2 text-sm text-slate-300">{routineNameById[session.routine_id] ?? 'Routine session'}</div> : null}
+                        </div>
+                        <div className="rounded-full bg-white/10 px-3 py-2 text-sm">
+                          {'sync_status' in session && session.sync_status === 'queued' ? 'Queued sync' : formatMass(session.total_volume_kg, weightUnit, { decimals: 0 })}
+                        </div>
+                      </div>
+                      <div className="mt-3 text-sm text-slate-300">
+                        {summarizeSession(session, exerciseNameById) || `${session.total_sets} working sets logged`}
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <ActionButton tone="secondary" onClick={() => repeatSession(session)} className="w-auto">Repeat</ActionButton>
+                        <ActionButton
+                          tone="secondary"
+                          onClick={() => {
+                            setEditingSessionId(session.id)
+                            const blocks = buildBlocksFromSession(session, weightUnit)
+                            setSessionDraft({
+                              routine_id: session.routine_id ?? '',
+                              notes: session.notes ?? '',
+                              perceived_energy: session.perceived_energy != null ? String(session.perceived_energy) : '',
+                              bodyweight_kg: session.bodyweight_kg != null ? formatMassInput(session.bodyweight_kg, weightUnit) : '',
+                              blocks: blocks.length ? blocks : [createSessionBlockDraft()],
+                            })
+                            if (blocks[0]?.exercise_id) {
+                              setSelectedExerciseId(blocks[0].exercise_id)
+                            }
+                          }}
+                          className="w-auto"
+                        >
+                          Edit
+                        </ActionButton>
+                        <ActionButton
+                          tone="secondary"
+                          onClick={() => setConfirmRequest({
+                            title: 'Delete this workout?',
+                            body: `Type ${session.notes || 'Workout session'} to confirm deleting it.`,
+                            confirmLabel: 'Delete workout',
+                            confirmationValue: session.notes || 'Workout session',
+                            confirmationHint: `Type ${session.notes || 'Workout session'} to confirm`,
+                            isPending: deleteSession.isPending,
+                            onConfirm: () => deleteSession.mutate(session.id),
+                          })}
+                          className="w-auto"
+                        >
+                          Delete
+                        </ActionButton>
+                      </div>
                     </div>
-                    <div className="rounded-full bg-white/10 px-3 py-2 text-sm">
-                      {'sync_status' in session && session.sync_status === 'queued' ? 'Queued sync' : formatMass(session.total_volume_kg, weightUnit, { decimals: 0 })}
-                    </div>
-                  </div>
-                  <div className="mt-3 text-sm text-slate-300">
-                    {summarizeSession(session, exerciseNameById) || `${session.total_sets} working sets logged`}
-                  </div>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <ActionButton tone="secondary" onClick={() => repeatSession(session)} className="w-auto">Repeat</ActionButton>
-                    <ActionButton
-                      tone="secondary"
-                      onClick={() => {
-                        setEditingSessionId(session.id)
-                        const blocks = buildBlocksFromSession(session, weightUnit)
-                        setSessionDraft({
-                          routine_id: session.routine_id ?? '',
-                          notes: session.notes ?? '',
-                          perceived_energy: session.perceived_energy != null ? String(session.perceived_energy) : '',
-                          bodyweight_kg: session.bodyweight_kg != null ? formatMassInput(session.bodyweight_kg, weightUnit) : '',
-                          blocks: blocks.length ? blocks : [createSessionBlockDraft()],
-                        })
-                        if (blocks[0]?.exercise_id) {
-                          setSelectedExerciseId(blocks[0].exercise_id)
-                        }
-                      }}
-                      className="w-auto"
-                    >
-                      Edit
-                    </ActionButton>
-                    <ActionButton tone="secondary" onClick={() => deleteSession.mutate(session.id)} className="w-auto">Delete</ActionButton>
-                  </div>
+                  ))}
+                  {!recentSessions.length ? <EmptyState title="No workouts yet" body="Log a workout to get started." /> : null}
                 </div>
-              ))}
-              {!recentSessions.length ? <EmptyState title="No workouts yet" body="The first log unlocks repeat-last-session shortcuts and better overload context." /> : null}
+              )}
             </div>
           </Panel>
         </div>
 
         <div className="space-y-4">
-          <Panel title="Overload coach" subtitle="Pick a lift to see what the next session should probably look like.">
+          <Panel title="Overload coach" subtitle="Progression at a glance.">
+            <div className="space-y-3">
+            <LabelledInput label="Search exercises" value={exerciseSearch} onChange={setExerciseSearch} placeholder="Search exercises" />
             <div className="flex flex-wrap gap-2">
               {(draftExerciseIds.length ? draftExerciseIds : quickExercises.map((exercise) => exercise.id)).map((exerciseId) => (
                 <button
@@ -656,6 +735,7 @@ export function TrainingPage() {
                   {exerciseNameById[exerciseId] ?? 'Exercise'}
                 </button>
               ))}
+            </div>
             </div>
 
             {progressionRecommendation ? (
@@ -674,12 +754,12 @@ export function TrainingPage() {
               </div>
             ) : (
               <div className="mt-4">
-                <EmptyState title="Pick an exercise" body="Select a lift from the workout draft or your library to inspect the progression recommendation." />
+                <EmptyState title="Pick an exercise" body="Select a lift to see the recommendation." />
               </div>
             )}
           </Panel>
 
-          <Panel title="Saved templates" subtitle="These stay available for one-tap session setup.">
+          <Panel title="Saved templates" subtitle="Ready to use.">
             <div className="space-y-3">
               {quickTemplates.map((template) => (
                 <div key={template.id} className="rounded-[24px] border border-slate-200 bg-white p-4">
@@ -694,11 +774,11 @@ export function TrainingPage() {
                   </div>
                 </div>
               ))}
-              {!quickTemplates.length ? <EmptyState title="No templates yet" body="Build repeatable sessions in Templates and they will show up here as quick starts." /> : null}
+              {!quickTemplates.length ? <EmptyState title="No templates yet" body="Saved workout templates will show up here." /> : null}
             </div>
           </Panel>
 
-          <Panel title="Routines" subtitle="Plan days once, launch them fast, and keep an eye on adherence.">
+          <Panel title="Routines" subtitle="Launch routine days fast.">
             <div className="space-y-3">
               {quickRoutines.map((routine) => (
                 <div key={routine.id} className="rounded-[24px] border border-slate-200 bg-white p-4">
@@ -709,7 +789,21 @@ export function TrainingPage() {
                         {routineStats[routine.id]?.recentCount ?? 0} sessions in the last 7 days / {routineStats[routine.id]?.plannedDays ?? 0} planned days
                       </div>
                     </div>
-                    <ActionButton tone="secondary" onClick={() => deleteRoutine.mutate(routine.id)} className="w-auto">Delete</ActionButton>
+                    <ActionButton
+                      tone="secondary"
+                      onClick={() => setConfirmRequest({
+                        title: 'Delete this routine?',
+                        body: `Type ${routine.name} to confirm deleting this routine.`,
+                        confirmLabel: 'Delete routine',
+                        confirmationValue: routine.name,
+                        confirmationHint: `Type ${routine.name} to confirm`,
+                        isPending: deleteRoutine.isPending,
+                        onConfirm: () => deleteRoutine.mutate(routine.id),
+                      })}
+                      className="w-auto"
+                    >
+                      Delete
+                    </ActionButton>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {Array.from(new Set(routine.items.map((item) => item.day_label))).map((dayLabel) => (
@@ -720,21 +814,22 @@ export function TrainingPage() {
                   </div>
                 </div>
               ))}
-              {!quickRoutines.length ? <EmptyState title="No routines yet" body="Create a routine to group training days and make adherence visible." /> : null}
+              {!quickRoutines.length ? <EmptyState title="No routines yet" body="Create a routine to fill this in." /> : null}
             </div>
           </Panel>
 
           <details className="rounded-[24px] border border-slate-200 bg-white/90 shadow-halo">
             <summary className="cursor-pointer list-none px-4 py-4">
               <div className="font-display text-xl text-slate-950">Routine builder</div>
-              <div className="mt-1 text-sm text-slate-500">Define day labels and target sets so session launch becomes one tap.</div>
+              <div className="mt-1 text-sm text-slate-500">Build routine days once.</div>
             </summary>
             <div className="border-t border-slate-200 px-4 py-4">
-              <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); createRoutine.mutate() }}>
-                <LabelledInput label="Routine name" value={routineDraft.name} onChange={(value) => setRoutineDraft((current) => ({ ...current, name: value }))} placeholder="Upper / Lower" />
-                <LabelledInput label="Goal" value={routineDraft.goal} onChange={(value) => setRoutineDraft((current) => ({ ...current, goal: value }))} placeholder="Hypertrophy phase" />
-                <LabelledInput label="Schedule notes" value={routineDraft.schedule_notes} onChange={(value) => setRoutineDraft((current) => ({ ...current, schedule_notes: value }))} placeholder="Mon Tue Thu Fri" />
-                <LabelledInput label="Notes" value={routineDraft.notes} onChange={(value) => setRoutineDraft((current) => ({ ...current, notes: value }))} placeholder="Keep compounds first" />
+              <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); if (!routineDraftError) { createRoutine.mutate() } }}>
+                <DraftStatusBanner restored={routineDraftState.meta.restored} savedAt={routineDraftState.meta.savedAt} onDiscard={routineDraftState.meta.clearDraft} />
+                <LabelledInput label="Routine name" value={routineDraft.name} onChange={(value) => setRoutineDraft((current) => ({ ...current, name: value }))} placeholder="Upper / lower" />
+                <LabelledInput label="Goal" value={routineDraft.goal} onChange={(value) => setRoutineDraft((current) => ({ ...current, goal: value }))} placeholder="Hypertrophy" />
+                <LabelledInput label="Schedule notes" value={routineDraft.schedule_notes} onChange={(value) => setRoutineDraft((current) => ({ ...current, schedule_notes: value }))} placeholder="Mon Wed Fri" />
+                <LabelledInput label="Notes" value={routineDraft.notes} onChange={(value) => setRoutineDraft((current) => ({ ...current, notes: value }))} placeholder="Compounds first" />
                 {routineDraft.items.map((item, index) => (
                   <div key={index} className="rounded-[22px] bg-slate-50 p-4 ring-1 ring-slate-200">
                     <div className="grid gap-3">
@@ -754,8 +849,9 @@ export function TrainingPage() {
                           })}
                           options={[
                             { label: 'Select exercise', value: '' },
-                            ...exercises.map((exercise) => ({ label: exercise.name, value: exercise.id })),
+                            ...filteredExercises.map((exercise) => ({ label: exercise.name, value: exercise.id })),
                           ]}
+                          error={!item.exercise_id ? 'Choose an exercise.' : undefined}
                         />
                       </div>
                       <div className="grid grid-cols-2 gap-3">
@@ -793,10 +889,11 @@ export function TrainingPage() {
                   <ActionButton tone="secondary" onClick={() => setRoutineDraft((current) => ({ ...current, items: [...current.items, createRoutineExerciseDraft()] }))} className="w-full sm:w-auto">
                     Add day slot
                   </ActionButton>
-                  <ActionButton type="submit" className="w-full sm:w-auto" disabled={!routineDraft.name.trim() || createRoutine.isPending}>
-                    Save routine
+                  <ActionButton type="submit" className="w-full sm:w-auto" disabled={Boolean(routineDraftError) || createRoutine.isPending}>
+                    {createRoutine.isPending ? 'Saving...' : 'Save routine'}
                   </ActionButton>
                 </div>
+                {routineDraftError ? <div className="app-status app-status-danger rounded-[22px] px-4 py-3 text-sm">{routineDraftError}</div> : null}
               </form>
             </div>
           </details>
@@ -804,19 +901,22 @@ export function TrainingPage() {
           <details className="rounded-[24px] border border-slate-200 bg-white/90 shadow-halo">
             <summary className="cursor-pointer list-none px-4 py-4">
               <div className="font-display text-xl text-slate-950">Exercise setup</div>
-              <div className="mt-1 text-sm text-slate-500">Create a lift once so the app knows the rep range and load jump rules.</div>
+              <div className="mt-1 text-sm text-slate-500">Save lifts once.</div>
             </summary>
             <div className="border-t border-slate-200 px-4 py-4">
               <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); createExercise.mutate() }}>
-                <LabelledInput label="Exercise name" value={exerciseDraft.name} onChange={(value) => setExerciseDraft((current) => ({ ...current, name: value }))} />
+                <LabelledInput label="Exercise name" value={exerciseDraft.name} onChange={(value) => setExerciseDraft((current) => ({ ...current, name: value }))} error={exerciseDraftError || undefined} />
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                   <LabelledInput label="Rep min" type="number" value={exerciseDraft.rep_target_min} onChange={(value) => setExerciseDraft((current) => ({ ...current, rep_target_min: value }))} />
                   <LabelledInput label="Rep max" type="number" value={exerciseDraft.rep_target_max} onChange={(value) => setExerciseDraft((current) => ({ ...current, rep_target_max: value }))} />
                   <LabelledInput label={`Load jump (${weightUnitLabel})`} type="number" step="0.5" value={exerciseDraft.load_increment} onChange={(value) => setExerciseDraft((current) => ({ ...current, load_increment: value }))} />
                 </div>
-                <ActionButton type="submit" className="sm:w-auto">Save exercise</ActionButton>
+                <ActionButton type="submit" className="sm:w-auto" disabled={Boolean(exerciseDraftError) || createExercise.isPending}>{createExercise.isPending ? 'Saving...' : 'Save exercise'}</ActionButton>
               </form>
 
+              <div className="mt-4">
+                <LabelledInput label="Search saved exercises" value={exerciseSearch} onChange={setExerciseSearch} placeholder="Bench, row, squat" />
+              </div>
               <div className="mt-4 space-y-2">
                 {quickExercises.map((exercise) => (
                   <button
@@ -834,6 +934,8 @@ export function TrainingPage() {
           </details>
         </div>
       </div>
+
+      <ConfirmSheet request={confirmRequest} onClose={() => setConfirmRequest(null)} />
     </div>
   )
 }

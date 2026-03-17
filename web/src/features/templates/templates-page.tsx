@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
-import { ActionButton, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
+import { ActionButton, ConfirmSheet, type ConfirmSheetRequest, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, PageIntro, Panel } from '../../components/ui'
 import { api, type MealTemplate, type Routine, type WorkoutTemplate } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
 
@@ -351,6 +351,7 @@ export function TemplatesPage() {
   const [workoutTemplateEditors, setWorkoutTemplateEditors] = useState<Record<string, WorkoutTemplateDraft>>({})
   const [editingMealTemplateId, setEditingMealTemplateId] = useState<string | null>(null)
   const [editingWorkoutTemplateId, setEditingWorkoutTemplateId] = useState<string | null>(null)
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmSheetRequest | null>(null)
 
   const createMealTemplate = useMutation({
     mutationFn: () => api.createMealTemplate(toMealTemplatePayload(mealTemplateDraft)),
@@ -444,12 +445,12 @@ export function TemplatesPage() {
       <PageIntro
         eyebrow="Templates"
         title="Save the repeatable stuff once"
-        description="Keep your common meals and gym sessions ready for one-tap reuse. Building templates is setup work, so the builders stay tucked away until you need them."
+        description="Save repeat meals and workouts for quick reuse."
       />
 
       <div className="grid gap-4 xl:grid-cols-2">
         <div className="space-y-4">
-          <Panel title="Meal templates" subtitle="These feed the fast log on the Nutrition page.">
+          <Panel title="Meal templates" subtitle="Ready for quick logging.">
             <div className="space-y-3">
               {(mealTemplatesQuery.data?.items ?? []).map((template) => {
                 const editor = mealTemplateEditors[template.id] ?? toMealTemplateDraft(template)
@@ -465,11 +466,15 @@ export function TemplatesPage() {
                       </ActionButton>
                       <ActionButton
                         tone="secondary"
-                        onClick={() => {
-                          if (window.confirm(`Delete meal template "${template.name}"?`)) {
-                            deleteMealTemplate.mutate(template.id)
-                          }
-                        }}
+                        onClick={() => setConfirmRequest({
+                          title: 'Delete this meal template?',
+                          body: `Type ${template.name} to confirm deleting this meal template.`,
+                          confirmLabel: 'Delete template',
+                          confirmationValue: template.name,
+                          confirmationHint: `Type ${template.name} to confirm`,
+                          isPending: deleteMealTemplate.isPending,
+                          onConfirm: () => deleteMealTemplate.mutate(template.id),
+                        })}
                         className="w-auto"
                         disabled={deleteMealTemplate.isPending}
                       >
@@ -492,14 +497,14 @@ export function TemplatesPage() {
                   </div>
                 )
               })}
-              {!mealTemplatesQuery.data?.items?.length ? <EmptyState title="No meal templates yet" body="Save a staple meal here and it will become a one-tap log option on your phone." /> : null}
+              {!mealTemplatesQuery.data?.items?.length ? <EmptyState title="No meal templates yet" body="Saved meal templates will show up here." /> : null}
             </div>
           </Panel>
 
           <details className="rounded-[24px] border border-slate-200 bg-white/90 shadow-halo">
             <summary className="cursor-pointer list-none px-4 py-4">
               <div className="font-display text-xl text-slate-950">Build a meal template</div>
-              <div className="mt-1 text-sm text-slate-500">Use saved foods or manual macro rows for the meals you repeat most.</div>
+              <div className="mt-1 text-sm text-slate-500">Save a repeat meal.</div>
             </summary>
             <div className="border-t border-slate-200 px-4 py-4">
               <MealTemplateForm
@@ -515,7 +520,7 @@ export function TemplatesPage() {
         </div>
 
         <div className="space-y-4">
-          <Panel title="Workout templates" subtitle="These become quick starts on the Training page.">
+          <Panel title="Workout templates" subtitle="Ready for quick starts.">
             <div className="space-y-3">
               {(workoutTemplatesQuery.data?.items ?? []).map((template) => {
                 const editor = workoutTemplateEditors[template.id] ?? toWorkoutTemplateDraft(template)
@@ -533,11 +538,15 @@ export function TemplatesPage() {
                       </ActionButton>
                       <ActionButton
                         tone="secondary"
-                        onClick={() => {
-                          if (window.confirm(`Delete workout template "${template.name}"?`)) {
-                            deleteWorkoutTemplate.mutate(template.id)
-                          }
-                        }}
+                        onClick={() => setConfirmRequest({
+                          title: 'Delete this workout template?',
+                          body: `Type ${template.name} to confirm deleting this workout template.`,
+                          confirmLabel: 'Delete template',
+                          confirmationValue: template.name,
+                          confirmationHint: `Type ${template.name} to confirm`,
+                          isPending: deleteWorkoutTemplate.isPending,
+                          onConfirm: () => deleteWorkoutTemplate.mutate(template.id),
+                        })}
                         className="w-auto"
                         disabled={deleteWorkoutTemplate.isPending}
                       >
@@ -561,14 +570,14 @@ export function TemplatesPage() {
                   </div>
                 )
               })}
-              {!workoutTemplatesQuery.data?.items?.length ? <EmptyState title="No workout templates yet" body="Save your common split or repeat session structure here for one-tap reuse." /> : null}
+              {!workoutTemplatesQuery.data?.items?.length ? <EmptyState title="No workout templates yet" body="Saved workout templates will show up here." /> : null}
             </div>
           </Panel>
 
           <details className="rounded-[24px] border border-slate-200 bg-white/90 shadow-halo">
             <summary className="cursor-pointer list-none px-4 py-4">
               <div className="font-display text-xl text-slate-950">Build a workout template</div>
-              <div className="mt-1 text-sm text-slate-500">Create a repeatable session that can populate the training log in one tap.</div>
+              <div className="mt-1 text-sm text-slate-500">Save a repeat workout.</div>
             </summary>
             <div className="border-t border-slate-200 px-4 py-4">
               <WorkoutTemplateForm
@@ -584,6 +593,8 @@ export function TemplatesPage() {
           </details>
         </div>
       </div>
+
+      <ConfirmSheet request={confirmRequest} onClose={() => setConfirmRequest(null)} />
     </div>
   )
 }

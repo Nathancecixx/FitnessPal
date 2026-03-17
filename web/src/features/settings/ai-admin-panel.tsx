@@ -41,23 +41,23 @@ type PersonaDraft = {
 const featureGuidance: Record<string, { label: string; description: string }> = {
   meal_photo_estimation: {
     label: 'meal_photo_estimation',
-    description: 'Meal-photo estimation. Favor fast vision-capable models.',
+    description: 'Meal photo estimation.',
   },
   nutrition_label_scan: {
     label: 'nutrition_label_scan',
-    description: 'Nutrition-label extraction. Accuracy matters more than style.',
+    description: 'Nutrition label scan.',
   },
   assistant_quick_capture: {
     label: 'assistant_quick_capture',
-    description: 'Draft parsing for natural-language logging.',
+    description: 'Quick draft parsing.',
   },
   coach_brief: {
     label: 'coach_brief',
-    description: 'Daily proactive coach read. Local-first is recommended.',
+    description: 'Daily coach brief.',
   },
   coach_advice: {
     label: 'coach_advice',
-    description: 'On-demand coach answers. Start local-first, then use cloud only if you need more reasoning depth.',
+    description: 'On-demand coach answers.',
   },
 }
 
@@ -277,10 +277,10 @@ export function AiAdminPanel() {
 
   return (
     <div className="space-y-4">
-      <Panel title="Coach Control" subtitle="Provider profiles, feature routing, and persona settings for the in-app AI coach.">
+      <Panel title="Coach Control" subtitle="Profiles, routing, and persona.">
         {status ? <div className="app-status app-status-warning mb-4 rounded-2xl px-4 py-3 text-sm">{status}</div> : null}
         <div className="mb-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
-          Cloud API keys are stored encrypted. Set <code>FITNESSPAL_CONFIG_SECRET</code> on the server before saving OpenAI or Anthropic credentials.
+          Cloud API keys are stored encrypted. Set <code>FITNESSPAL_CONFIG_SECRET</code> before saving them.
         </div>
         <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
           <div className="space-y-3">
@@ -300,7 +300,7 @@ export function AiAdminPanel() {
                 <div className="mt-2 text-xs text-slate-400">{profile.is_read_only ? 'Legacy fallback' : (profile.last_reachable ? 'Reachable' : 'Not tested')}</div>
               </button>
             ))}
-            {!profiles.length ? <EmptyState title="No AI profiles yet" body="Create the first provider profile, then map features to it below." /> : null}
+            {!profiles.length ? <EmptyState title="No AI profiles yet" body="Create a profile to get started." /> : null}
           </div>
 
           <form
@@ -329,7 +329,7 @@ export function AiAdminPanel() {
               <LabelledInput label="Timeout seconds" type="number" value={profileDraft.timeout_seconds} onChange={(value) => setProfileDraft((current) => ({ ...current, timeout_seconds: value }))} />
             </div>
             <LabelledInput label="Description" value={profileDraft.description} onChange={(value) => setProfileDraft((current) => ({ ...current, description: value }))} />
-            <LabelledInput label="API key" type="password" value={profileDraft.api_key} onChange={(value) => setProfileDraft((current) => ({ ...current, api_key: value }))} placeholder={selectedProfile?.has_api_key ? 'Stored key present; enter a new one to replace it' : 'Optional for Ollama or local proxies'} />
+            <LabelledInput label="API key" type="password" value={profileDraft.api_key} onChange={(value) => setProfileDraft((current) => ({ ...current, api_key: value }))} placeholder={selectedProfile?.has_api_key ? 'Stored key present; enter a new one to replace it' : 'Optional for local setups'} />
             <label className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
               <input type="checkbox" checked={profileDraft.clear_api_key} onChange={(event) => setProfileDraft((current) => ({ ...current, clear_api_key: event.target.checked }))} />
               Clear stored API key
@@ -387,7 +387,7 @@ export function AiAdminPanel() {
         </div>
       </Panel>
 
-      <Panel title="Feature Routing" subtitle="Choose which backend handles each AI feature, plus optional per-feature overrides. The coach surfaces are designed to work well on local models first.">
+      <Panel title="Feature Routing" subtitle="Choose a profile for each feature.">
         <div className="space-y-4">
           {(featuresQuery.data?.items ?? []).map((binding) => {
             const draft = featureDrafts[binding.feature_key] ?? toFeatureDraft(binding)
@@ -421,9 +421,9 @@ export function AiAdminPanel() {
         </div>
       </Panel>
 
-      <Panel title="Coach Persona" subtitle="Brand the assistant voice that appears in the dashboard and Coach page.">
+      <Panel title="Coach Persona" subtitle="Name and tone.">
         {!personaDraft ? (
-          <EmptyState title="Persona loading" body="The default coach persona will appear here once the runtime response arrives." />
+          <EmptyState title="Persona loading" body="Persona settings will show up here." />
         ) : (
           <form
             className="grid gap-3"

@@ -188,9 +188,9 @@ test('settings page groups primary controls on desktop', async ({ page }, testIn
 
   await page.goto('/settings')
 
-  await expect(page.getByRole('heading', { name: 'A cleaner control center for quick mobile edits and calmer desktop management.' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Preferences that affect everyday logging' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Credentials that are easy to manage without feeling risky' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Everyday preferences' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Security and access' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Snapshot' })).toBeVisible()
   await expect(page.getByText('Jump to')).toBeVisible()
 
@@ -207,8 +207,8 @@ test('settings page stays usable on mobile', async ({ page }, testInfo) => {
   await expect(page.getByRole('button', { name: 'Save preferences' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Generate key' })).toBeVisible()
 
-  await page.getByRole('heading', { name: 'Backups and background work that stay easy to inspect' }).scrollIntoViewIfNeeded()
-  await expect(page.getByRole('heading', { name: 'Backups and background work that stay easy to inspect' })).toBeVisible()
+  await page.getByRole('heading', { name: 'Backups and background jobs' }).scrollIntoViewIfNeeded()
+  await expect(page.getByRole('heading', { name: 'Backups and background jobs' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Create export' })).toBeVisible()
 
   await page.screenshot({ path: testInfo.outputPath('settings-mobile.png'), fullPage: true })

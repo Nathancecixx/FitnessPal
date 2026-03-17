@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState, type ReactNode } from 'react'
 
-import { ActionButton, DataList, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, Panel } from '../../components/ui'
+import { ActionButton, ConfirmSheet, type ConfirmSheetRequest, DataList, EmptyState, LabelledInput, LabelledSelect, LabelledTextArea, Panel } from '../../components/ui'
 import { api, type UserSetupResponse } from '../../lib/api'
 import { queryClient } from '../../lib/query-client'
 import { useUserPreferencesQuery } from '../../lib/user-preferences'
@@ -149,6 +149,7 @@ export function SettingsPage() {
   const [weightUnitDraft, setWeightUnitDraft] = useState<'kg' | 'lbs'>('kg')
   const [timezoneDraft, setTimezoneDraft] = useState(detectBrowserTimezone)
   const [setupResult, setSetupResult] = useState<UserSetupResponse | null>(null)
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmSheetRequest | null>(null)
 
   useEffect(() => {
     if (preferencesQuery.data?.weight_unit) {
@@ -298,10 +299,10 @@ export function SettingsPage() {
           <div>
             <div className="text-[11px] font-semibold uppercase tracking-[0.32em] text-amber-300/80">Settings</div>
             <h1 className="mt-3 max-w-3xl font-display text-[2.3rem] leading-none text-canvas sm:text-[3rem]">
-              A cleaner control center for quick mobile edits and calmer desktop management.
+              Settings
             </h1>
             <p className="mt-4 max-w-3xl text-sm leading-7 text-slate-300 md:text-base">
-              The page is grouped by what people actually need to do: tune personal preferences, handle security, manage backups, and only dive into admin controls when it matters.
+              Preferences, security, backups, and admin tools.
             </p>
             <div className="mt-5 rounded-[26px] border border-white/10 bg-white/5 p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-300">Jump to</div>
@@ -312,10 +313,10 @@ export function SettingsPage() {
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <HeroMetric label="Account" value={sessionQuery.data?.user?.username ?? 'Local user'} detail={isAdmin ? 'Admin permissions are active for this session.' : 'Member-level controls are visible for this session.'} />
-            <HeroMetric label="Units + TZ" value={`${weightUnitDraft.toUpperCase()} | ${timezoneDraft}`} detail={hasUnsavedPreference ? 'You have a preference change ready to save.' : 'Units and local-day timing are already synced.'} />
-            <HeroMetric label="Coach Persona" value={runtimeQuery.data?.ai.persona.display_name ?? 'Coach'} detail={runtimeQuery.data ? `${runtimeQuery.data.ai.configured_feature_count} AI feature routes configured.` : 'Runtime details will appear once loaded.'} />
-            <HeroMetric label="Jobs" value={`${queuedJobs}/${runningJobs}`} detail="Queued and running background work, surfaced early so maintenance feels less hidden." />
+            <HeroMetric label="Account" value={sessionQuery.data?.user?.username ?? 'Local user'} detail={isAdmin ? 'Admin access' : 'Member access'} />
+            <HeroMetric label="Units + TZ" value={`${weightUnitDraft.toUpperCase()} | ${timezoneDraft}`} detail={hasUnsavedPreference ? 'Unsaved change' : 'In sync'} />
+            <HeroMetric label="Coach Persona" value={runtimeQuery.data?.ai.persona.display_name ?? 'Coach'} detail={runtimeQuery.data ? `${runtimeQuery.data.ai.configured_feature_count} AI routes` : 'Loading runtime'} />
+            <HeroMetric label="Jobs" value={`${queuedJobs}/${runningJobs}`} detail="Queued / running" />
           </div>
         </div>
       </section>
@@ -323,10 +324,10 @@ export function SettingsPage() {
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-8">
           <section className="space-y-4">
-            <SectionHeading id="profile" eyebrow="Personal Setup" title="Preferences that affect everyday logging" description="Keep your core habits fast to adjust on a phone: one place for units and the goals that shape nutrition and bodyweight guidance." />
+            <SectionHeading id="profile" eyebrow="Personal Setup" title="Everyday preferences" description="Units, timezone, and goals." />
 
             <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-              <Panel title="Preferences" subtitle="Choose the units and timezone used across weigh-ins, training loads, summaries, and coach timing." action={<PanelBadge>{hasUnsavedPreference ? 'Unsaved changes' : `${weightUnitDraft.toUpperCase()} active`}</PanelBadge>}>
+              <Panel title="Preferences" subtitle="Units and timezone." action={<PanelBadge>{hasUnsavedPreference ? 'Unsaved changes' : `${weightUnitDraft.toUpperCase()} active`}</PanelBadge>}>
                 <form
                   className="grid gap-4"
                   onSubmit={(event) => {
@@ -335,7 +336,7 @@ export function SettingsPage() {
                   }}
                 >
                   <div className="rounded-[22px] bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-                    Keep this aligned with how you think about your bodyweight and lifts so every screen reads naturally. The timezone also controls what counts as "today" for the coach and the morning refresh.
+                    These settings shape how logs, trends, and coach timing are shown.
                   </div>
 
                   <LabelledSelect
@@ -354,7 +355,7 @@ export function SettingsPage() {
                     placeholder="America/Toronto"
                   />
                   <div className="rounded-[22px] bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
-                    Use an IANA timezone like <code>America/Toronto</code> or <code>America/New_York</code>. Browser default: <strong>{detectBrowserTimezone()}</strong>.
+                    Use an IANA timezone like <code>America/Toronto</code>. Browser: <strong>{detectBrowserTimezone()}</strong>.
                   </div>
 
                   {updatePreferences.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{updatePreferences.error.message}</div> : null}
@@ -366,7 +367,7 @@ export function SettingsPage() {
                 </form>
               </Panel>
 
-              <Panel title="Goals" subtitle="Targets that drive coach recommendations and progress summaries." action={<PanelBadge>{countLabel(goalCount, 'goal')}</PanelBadge>}>
+              <Panel title="Goals" subtitle="Targets for guidance and summaries." action={<PanelBadge>{countLabel(goalCount, 'goal')}</PanelBadge>}>
                 <form
                   className="grid gap-3"
                   onSubmit={(event) => {
@@ -400,14 +401,26 @@ export function SettingsPage() {
                         body={`${goal.target_value} ${goal.unit} per ${goal.period}`}
                         meta={`${goal.category} | ${goal.metric_key}`}
                         action={
-                          <ActionButton tone="secondary" onClick={() => deleteGoal.mutate(goal.id)} className="w-full sm:w-auto">
+                          <ActionButton
+                            tone="secondary"
+                            onClick={() => setConfirmRequest({
+                              title: 'Delete this goal?',
+                              body: `Type ${goal.title} to confirm deleting this goal.`,
+                              confirmLabel: 'Delete goal',
+                              confirmationValue: goal.title,
+                              confirmationHint: `Type ${goal.title} to confirm`,
+                              isPending: deleteGoal.isPending,
+                              onConfirm: () => deleteGoal.mutate(goal.id),
+                            })}
+                            className="w-full sm:w-auto"
+                          >
                             Delete
                           </ActionButton>
                         }
                       />
                     ))
                   ) : (
-                    <EmptyState title="No goals yet" body="Add one or two clear targets so daily guidance has something concrete to steer toward." />
+                    <EmptyState title="No goals yet" body="Add a goal to guide the app." />
                   )}
                 </div>
               </Panel>
@@ -415,10 +428,10 @@ export function SettingsPage() {
           </section>
 
           <section className="space-y-4">
-            <SectionHeading id="security" eyebrow="Security & Access" title="Credentials that are easy to manage without feeling risky" description="The most common account and integration actions are grouped together so people can change a password, generate a client token, or manage users without hopping around." />
+            <SectionHeading id="security" eyebrow="Security & Access" title="Security and access" description="Passwords, keys, and users." />
 
             <div className="grid gap-4 lg:grid-cols-2">
-              <Panel title="Password" subtitle="Change the password for the current signed-in account." action={<PanelBadge>12+ characters</PanelBadge>}>
+              <Panel title="Password" subtitle="Current account." action={<PanelBadge>12+ characters</PanelBadge>}>
                 <form
                   className="grid gap-3"
                   onSubmit={(event) => {
@@ -440,7 +453,7 @@ export function SettingsPage() {
                 </form>
               </Panel>
 
-              <Panel title="Integration API keys" subtitle="Issue scoped local tokens for trusted clients, scripts, and automations." action={<PanelBadge>{countLabel(apiKeyCount, 'key')}</PanelBadge>}>
+              <Panel title="Integration API keys" subtitle="Local tokens for trusted clients." action={<PanelBadge>{countLabel(apiKeyCount, 'key')}</PanelBadge>}>
                 <div className="grid gap-3">
                   <LabelledInput label="Key name" value={apiKeyName} onChange={setApiKeyName} />
                   <LabelledSelect
@@ -451,7 +464,7 @@ export function SettingsPage() {
                   />
 
                   {createKey.isError ? <div className="app-status app-status-danger rounded-2xl px-4 py-3 text-sm">{createKey.error.message}</div> : null}
-                  {createKey.isSuccess ? <div className="app-status app-status-success rounded-2xl px-4 py-3 text-sm">New token created. Copy it while it is visible.</div> : null}
+                  {createKey.isSuccess ? <div className="app-status app-status-success rounded-2xl px-4 py-3 text-sm">Token created. Copy it now.</div> : null}
 
                   <ActionButton onClick={() => createKey.mutate()} disabled={createKey.isPending || !apiKeyName.trim()}>
                     Generate key
@@ -475,21 +488,33 @@ export function SettingsPage() {
                         meta={record.scopes.join(', ')}
                         tone="muted"
                         action={
-                          <ActionButton tone="secondary" onClick={() => revokeKey.mutate(record.id)} className="w-full sm:w-auto">
+                          <ActionButton
+                            tone="secondary"
+                            onClick={() => setConfirmRequest({
+                              title: 'Revoke this API key?',
+                              body: `Type ${record.name} to confirm revoking this API key.`,
+                              confirmLabel: 'Revoke key',
+                              confirmationValue: record.name,
+                              confirmationHint: `Type ${record.name} to confirm`,
+                              isPending: revokeKey.isPending,
+                              onConfirm: () => revokeKey.mutate(record.id),
+                            })}
+                            className="w-full sm:w-auto"
+                          >
                             Revoke
                           </ActionButton>
                         }
                       />
                     ))
                   ) : (
-                    <EmptyState title="No API keys yet" body="Generate a scoped token only when you need one for a trusted local integration." />
+                    <EmptyState title="No API keys yet" body="Create a key when you need one." />
                   )}
                 </div>
               </Panel>
             </div>
 
             {isAdmin ? (
-              <Panel title="Users" subtitle="Create accounts and issue one-time setup links without burying the important shareable details." action={<PanelBadge>{countLabel(userCount, 'managed user')}</PanelBadge>}>
+              <Panel title="Users" subtitle="Accounts and setup links." action={<PanelBadge>{countLabel(userCount, 'managed user')}</PanelBadge>}>
                 <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
                   <form
                     className="grid gap-3"
@@ -533,7 +558,7 @@ export function SettingsPage() {
                         />
                       ))
                     ) : (
-                      <EmptyState title="No managed users yet" body="Create the first non-admin user and share the setup link so they can choose their own password." />
+                      <EmptyState title="No managed users yet" body="Create a user to get started." />
                     )}
                   </div>
                 </div>
@@ -542,12 +567,12 @@ export function SettingsPage() {
           </section>
 
           <section className="space-y-4">
-            <SectionHeading id="maintenance" eyebrow="Maintenance" title="Backups and background work that stay easy to inspect" description="Export and restore actions are paired with a live jobs feed, so people can confirm what changed without guessing where the system state lives." />
+            <SectionHeading id="maintenance" eyebrow="Maintenance" title="Backups and background jobs" description="Exports, restores, and worker activity." />
 
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-              <Panel title="Exports and restore" subtitle="Create local backups and restore JSON payloads for the current signed-in user scope." action={<PanelBadge>{countLabel(exportCount, 'export')}</PanelBadge>}>
+              <Panel title="Exports and restore" subtitle="Back up or restore your data." action={<PanelBadge>{countLabel(exportCount, 'export')}</PanelBadge>}>
                 <div className="rounded-[22px] bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-                  Restores affect the signed-in user only, which makes this safer to use from mobile or a shared workstation.
+                  Restores affect the signed-in user only.
                 </div>
 
                 <div className="mt-4 flex flex-wrap gap-3">
@@ -577,7 +602,7 @@ export function SettingsPage() {
                       />
                     ))
                   ) : (
-                    <EmptyState title="No exports yet" body="Create a backup before major cleanup, testing, or data imports." />
+                    <EmptyState title="No exports yet" body="Create a backup to see it here." />
                   )}
 
                   {exportsQuery.data?.has_more ? (
@@ -613,7 +638,7 @@ export function SettingsPage() {
                 </div>
               </Panel>
 
-              <Panel title="Background jobs" subtitle="Live worker activity for the current user, refreshed every five seconds." action={<PanelBadge>{queuedJobs ? `${queuedJobs} queued` : 'Idle'}</PanelBadge>}>
+              <Panel title="Background jobs" subtitle="Live worker activity." action={<PanelBadge>{queuedJobs ? `${queuedJobs} queued` : 'Idle'}</PanelBadge>}>
                 <div className="space-y-3">
                   {(jobsQuery.data?.items ?? []).map((job) => (
                     <div key={job.id} className="rounded-[24px] border border-slate-200 bg-white px-4 py-4 text-sm">
@@ -628,7 +653,7 @@ export function SettingsPage() {
                     </div>
                   ))}
 
-                  {!jobsQuery.data?.items?.length ? <EmptyState title="No jobs yet" body="As you log meals, upload photos, or trigger backups, the worker queue will appear here." /> : null}
+                  {!jobsQuery.data?.items?.length ? <EmptyState title="No jobs yet" body="Worker activity will show up here." /> : null}
 
                   {jobsQuery.data?.has_more ? (
                     <ActionButton tone="secondary" onClick={() => setJobLimit((current) => current + 20)} className="w-full sm:w-auto">
@@ -642,14 +667,14 @@ export function SettingsPage() {
 
           {isAdmin ? (
             <section className="space-y-4">
-              <SectionHeading id="admin" eyebrow="Admin Controls" title="Advanced coach and runtime configuration" description="These tools stay available, but they now sit after the everyday tasks so they do not overwhelm the people who just need to update a few settings quickly." />
+              <SectionHeading id="admin" eyebrow="Admin Controls" title="Advanced coach and runtime configuration" description="AI and runtime controls." />
               <AiAdminPanel />
             </section>
           ) : null}
         </div>
 
         <div className="space-y-4 xl:sticky xl:top-4 xl:self-start">
-          <Panel title="Snapshot" subtitle="A compact summary that stays useful when the main content gets long.">
+          <Panel title="Snapshot" subtitle="Quick summary.">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
               <StackCard title={isAdmin ? 'Admin session' : 'Member session'} body={sessionQuery.data?.actor.display_name ?? 'Unknown actor'} meta={sessionQuery.data?.user?.username ?? 'User details unavailable'} tone="muted" />
               <StackCard title={`${apiKeyCount} active keys`} body={`${queuedJobs} queued jobs`} meta={hasUnsavedPreference ? 'A measurement preference is waiting to be saved.' : 'Core preferences are in sync.'} tone="muted" />
@@ -657,7 +682,7 @@ export function SettingsPage() {
             </div>
           </Panel>
 
-          <Panel title="Session" subtitle="Current auth context used by the web app.">
+          <Panel title="Session" subtitle="Current auth context.">
             {sessionQuery.data ? (
               <DataList rows={[
                 { label: 'Actor', value: sessionQuery.data.actor.display_name },
@@ -668,11 +693,11 @@ export function SettingsPage() {
                 { label: 'API base', value: runtimeQuery.data?.api_prefix ?? '/api/v1' },
               ]} />
             ) : (
-              <EmptyState title="Not signed in" body="Use the login screen to establish a local session before managing the system." />
+              <EmptyState title="Not signed in" body="Sign in to manage the system." />
             )}
           </Panel>
 
-          <Panel title="Runtime" subtitle="Current server, worker, and coach configuration for this user context.">
+          <Panel title="Runtime" subtitle="Server and coach config.">
             {runtimeQuery.data ? (
               <DataList rows={[
                 { label: 'App', value: runtimeQuery.data.app_name },
@@ -686,11 +711,13 @@ export function SettingsPage() {
                 { label: 'Exports root', value: runtimeQuery.data.exports_root },
               ]} />
             ) : (
-              <EmptyState title="Runtime unavailable" body="The web app could not fetch server runtime details." />
+              <EmptyState title="Runtime unavailable" body="Runtime details could not be loaded." />
             )}
           </Panel>
         </div>
       </div>
+
+      <ConfirmSheet request={confirmRequest} onClose={() => setConfirmRequest(null)} />
     </div>
   )
 }

@@ -3,17 +3,18 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { api, flushQueuedWrites } from '../../lib/api'
-import { getSyncState, setSyncNamespace, subscribeSyncState } from '../../lib/offline'
+import { getSyncState, listQueuedSyncRequests, setSyncNamespace, subscribeSyncState } from '../../lib/offline'
+import { clearPwaUpdateReady, promptPwaInstall, subscribePwaState, type PwaState } from '../../lib/pwa'
 import { queryClient } from '../../lib/query-client'
 
 const navItems = [
-  { to: '/', label: 'Today', hint: 'Dashboard and quick actions' },
-  { to: '/nutrition', label: 'Food', hint: 'Meals, photos, and recipes' },
-  { to: '/training', label: 'Train', hint: 'Sets, sessions, and overload' },
-  { to: '/weight', label: 'Weight', hint: 'Fast weigh-ins and trends' },
-  { to: '/templates', label: 'Templates', hint: 'Repeat what you use often' },
-  { to: '/coach', label: 'Coach', hint: 'Signals, check-ins, and proactive guidance' },
-  { to: '/settings', label: 'Settings', hint: 'AI control, keys, and runtime' },
+  { to: '/', label: 'Today', hint: 'Overview' },
+  { to: '/nutrition', label: 'Food', hint: 'Meals' },
+  { to: '/training', label: 'Train', hint: 'Sessions' },
+  { to: '/weight', label: 'Weight', hint: 'Trends' },
+  { to: '/templates', label: 'Templates', hint: 'Repeats' },
+  { to: '/coach', label: 'Coach', hint: 'Signals' },
+  { to: '/settings', label: 'Settings', hint: 'System' },
 ] as const
 
 const THEME_STORAGE_KEY = 'fitnesspal-theme'
@@ -71,8 +72,8 @@ function LoginScreen(props: { theme: ThemeMode; onToggleTheme: () => void }) {
           <div className="text-[11px] uppercase tracking-[0.35em] text-amber-300/75">FitnessPal</div>
           <ThemeToggle theme={props.theme} onToggle={props.onToggleTheme} />
         </div>
-        <h1 className="mt-4 font-display text-4xl leading-none">Multi-user local login</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-300">The admin account comes from server config. Admins can issue password setup links for other users from Settings after signing in.</p>
+        <h1 className="mt-4 font-display text-4xl leading-none">Local sign in</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Admins can issue setup links from Settings.</p>
         <form className="mt-6 grid gap-4" onSubmit={(event) => { event.preventDefault(); login.mutate() }}>
           <label className="block">
             <span className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-400">Username</span>
@@ -113,9 +114,26 @@ function MobileNav({ pathname }: { pathname: string }) {
   )
 }
 
+function describeQueuedRequest(path: string, method: string) {
+  if (path.startsWith('/meals')) {
+    return `${method} meal log`
+  }
+  if (path.startsWith('/workout-sessions')) {
+    return `${method} workout log`
+  }
+  if (path.startsWith('/weight-entries')) {
+    return `${method} weigh-in`
+  }
+  return `${method} ${path.replace('/', '')}`
+}
+
 export function AppShell() {
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme)
   const [syncState, setSyncState] = useState(getSyncState)
+  const [queuedSyncRequests, setQueuedSyncRequests] = useState(() => listQueuedSyncRequests())
+  const [showSyncDrawer, setShowSyncDrawer] = useState(false)
+  const [pwaState, setPwaState] = useState<PwaState>({ installAvailable: false, updateAvailable: false })
+  const [hideUpdateToast, setHideUpdateToast] = useState(false)
   const sessionQuery = useQuery({ queryKey: ['session'], queryFn: api.getSession, retry: false })
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const currentItem = useMemo(() => navItems.find((item) => item.to === pathname || (pathname === '/insights' && item.to === '/coach')) ?? navItems[0], [pathname])
@@ -137,17 +155,28 @@ export function AppShell() {
   }, [theme])
 
   useEffect(() => {
-    const unsubscribe = subscribeSyncState(setSyncState)
+    const unsubscribe = subscribeSyncState((nextState) => {
+      setSyncState(nextState)
+      setQueuedSyncRequests(listQueuedSyncRequests())
+    })
     void flushQueuedWrites()
     return unsubscribe
   }, [])
+
+  useEffect(() => subscribePwaState(setPwaState), [])
+
+  useEffect(() => {
+    if (pwaState.updateAvailable) {
+      setHideUpdateToast(false)
+    }
+  }, [pwaState.updateAvailable])
 
   useEffect(() => {
     setSyncNamespace(sessionUser?.id ?? null)
   }, [sessionUser?.id])
 
   if (sessionQuery.isLoading) {
-    return <div className="app-text-muted flex min-h-screen items-center justify-center font-display text-3xl">Booting FitnessPal...</div>
+    return <div className="app-text-muted flex min-h-screen items-center justify-center font-display text-3xl">Loading...</div>
   }
 
   if (isSetupRoute && sessionQuery.isError) {
@@ -177,8 +206,8 @@ export function AppShell() {
         <aside className="sticky top-4 hidden h-[calc(100vh-2rem)] self-start rounded-[32px] bg-slate-950/95 p-6 text-white shadow-halo backdrop-blur lg:flex lg:flex-col">
           <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
             <div className="text-xs uppercase tracking-[0.35em] text-amber-300/75">FitnessPal</div>
-            <div className="mt-3 font-display text-3xl leading-none">Daily tracking with AI coach</div>
-            <p className="mt-3 text-sm leading-6 text-slate-300">Quick daily entries. AI coaching and analytics where you may need.</p>
+            <div className="mt-3 font-display text-3xl leading-none">Daily tracking</div>
+            <p className="mt-3 text-sm leading-6 text-slate-300">Food, training, weight, and coach.</p>
           </div>
 
           <nav className="mt-8 space-y-2">
@@ -190,7 +219,6 @@ export function AppShell() {
                 activeProps={{ className: 'block rounded-2xl bg-lime px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg' }}
               >
                 <div>{item.label}</div>
-                <div className="mt-1 text-xs font-normal text-inherit/80">{item.hint}</div>
               </Link>
             ))}
           </nav>
@@ -203,13 +231,27 @@ export function AppShell() {
                 <div>
                   <div className="text-[11px] uppercase tracking-[0.24em] text-slate-400">FitnessPal</div>
                   <div className="mt-1 font-display text-3xl leading-none text-slate-950">{currentItem.label}</div>
-                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{currentItem.hint}</p>
                   <div className="mt-3 inline-flex rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600">
-                    {syncState.isOnline ? 'Online' : 'Offline'}
-                    {syncState.queuedCount ? ` | ${syncState.queuedCount} queued` : ''}
+                    <button
+                      type="button"
+                      className="text-left"
+                      onClick={() => setShowSyncDrawer((current) => !current)}
+                    >
+                      {syncState.isOnline ? 'Online' : 'Offline'}
+                      {syncState.queuedCount ? ` | ${syncState.queuedCount} queued` : ''}
+                    </button>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
+                  {pwaState.installAvailable ? (
+                    <button
+                      type="button"
+                      className="app-button-secondary rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em]"
+                      onClick={() => { void promptPwaInstall() }}
+                    >
+                      Install
+                    </button>
+                  ) : null}
                   <div className="app-card-soft hidden rounded-[22px] px-4 py-3 text-right text-xs md:block">
                     <div className="font-semibold text-slate-900">{sessionUser?.username}</div>
                     <div>{sessionUser?.is_admin ? 'Admin' : 'User'}</div>
@@ -236,6 +278,50 @@ export function AppShell() {
                   </Link>
                 ))}
               </div>
+              {showSyncDrawer ? (
+                <div className="mt-4 rounded-[24px] bg-slate-100 p-4 text-sm text-slate-700">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Sync status</div>
+                      <div className="mt-1 font-semibold text-slate-950">
+                        {syncState.isOnline ? 'Online and ready.' : 'Offline. New logs stay on this device.'}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        Last sync: {syncState.lastFlushedAt ? new Date(syncState.lastFlushedAt).toLocaleString() : 'Not yet'}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="app-button-secondary rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em]"
+                        onClick={() => { void flushQueuedWrites() }}
+                        disabled={!syncState.isOnline || !queuedSyncRequests.length || syncState.isFlushing}
+                      >
+                        {syncState.isFlushing ? 'Syncing...' : 'Retry sync now'}
+                      </button>
+                      <button
+                        type="button"
+                        className="app-button-secondary rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em]"
+                        onClick={() => setShowSyncDrawer(false)}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {queuedSyncRequests.length ? queuedSyncRequests.map((request) => (
+                      <div key={request.id} className="rounded-[20px] bg-white px-4 py-3">
+                        <div className="font-semibold text-slate-950">{describeQueuedRequest(request.path, request.method)}</div>
+                        <div className="mt-1 text-xs text-slate-500">{new Date(request.created_at).toLocaleString()}</div>
+                      </div>
+                    )) : (
+                      <div className="rounded-[20px] bg-white px-4 py-3 text-slate-500">
+                        No queued logs. Uploads still need a connection.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </header>
 
@@ -248,6 +334,35 @@ export function AppShell() {
       </div>
 
       <MobileNav pathname={pathname} />
+      {pwaState.updateAvailable && !hideUpdateToast ? (
+        <div className="fixed inset-x-3 bottom-24 z-40 lg:bottom-6 lg:left-auto lg:right-6 lg:w-[360px]">
+          <div className="app-panel rounded-[24px] border px-4 py-4 shadow-halo">
+            <div className="font-semibold app-text-primary">App update ready</div>
+            <div className="mt-2 text-sm leading-6 app-text-muted">
+              Reload to use the latest version.
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="app-button-primary rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em]"
+                onClick={() => {
+                  clearPwaUpdateReady()
+                  window.location.reload()
+                }}
+              >
+                Reload now
+              </button>
+              <button
+                type="button"
+                className="app-button-secondary rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em]"
+                onClick={() => setHideUpdateToast(true)}
+              >
+                Later
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

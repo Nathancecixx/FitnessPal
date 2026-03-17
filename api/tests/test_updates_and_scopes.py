@@ -30,14 +30,19 @@ from app.core.security import Actor, require_scope
 from app.core.serialization import export_payload, restore_payload
 from app.modules.metrics import WeightEntryCreate, WeightEntryUpdate, create_weight_entry, update_weight_entry
 from app.modules.nutrition import (
+    FoodCreate,
+    FoodUpdate,
     MealCreate,
     MealItemInput,
     MealTemplateCreate,
     MealTemplateUpdate,
     MealUpdate,
+    create_food,
     create_meal,
     create_meal_template,
     delete_meal_template,
+    list_foods,
+    update_food,
     update_meal,
     update_meal_template,
 )
@@ -162,6 +167,61 @@ class UpdateAndScopeTests(unittest.TestCase):
         self.assertEqual(updated["totals"]["calories"], 540)
         self.assertEqual(updated["totals"]["protein_g"], 38)
         self.assertEqual(meal.total_carbs_g, 62)
+
+    def test_update_food_edits_macros_and_favorite_flag(self) -> None:
+        with self.SessionLocal() as session:
+            created = create_food(
+                FoodCreate(
+                    name="Greek yogurt",
+                    calories=100,
+                    protein_g=15,
+                    carbs_g=5,
+                    fat_g=0,
+                ),
+                self.actor,
+                session,
+            )
+
+            updated = update_food(
+                created["id"],
+                FoodUpdate(
+                    brand="Local Dairy",
+                    calories=110,
+                    protein_g=17,
+                    notes="Edited after label scan",
+                    is_favorite=True,
+                ),
+                self.actor,
+                session,
+            )
+            row = session.get(FoodItem, created["id"])
+
+        self.assertIsNotNone(row)
+        self.assertEqual(updated["brand"], "Local Dairy")
+        self.assertEqual(updated["calories"], 110)
+        self.assertEqual(updated["protein_g"], 17)
+        self.assertEqual(updated["notes"], "Edited after label scan")
+        self.assertTrue(updated["is_favorite"])
+        self.assertTrue(row.is_favorite)
+
+    def test_list_foods_can_filter_to_favorites_only(self) -> None:
+        with self.SessionLocal() as session:
+            create_food(
+                FoodCreate(name="Chicken breast", calories=165, protein_g=31, carbs_g=0, fat_g=3.6, is_favorite=True),
+                self.actor,
+                session,
+            )
+            create_food(
+                FoodCreate(name="Rice", calories=130, protein_g=2.4, carbs_g=28, fat_g=0.2, is_favorite=False),
+                self.actor,
+                session,
+            )
+
+            result = list_foods(self.actor, session, favorites_only=True)
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["name"], "Chicken breast")
+        self.assertTrue(result["items"][0]["is_favorite"])
 
     def test_update_workout_session_replaces_sets_and_recalculates_volume(self) -> None:
         with self.SessionLocal() as session:
