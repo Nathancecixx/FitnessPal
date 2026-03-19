@@ -289,3 +289,86 @@ test('calendar keeps future dates visible but read-only', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Create weight' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Save check-in' })).toBeDisabled()
 })
+
+test('calendar nav can leave the page without bouncing back', async ({ page }) => {
+  await installCalendarBaseMocks(page)
+
+  await page.route('**/api/v1/calendar/month**', (route) => jsonRoute(route, {
+    anchor_date: '2026-03-12',
+    month_start: '2026-03-01',
+    month_end: '2026-03-31',
+    grid_start: '2026-03-08',
+    grid_end: '2026-03-14',
+    today: '2026-03-12',
+    timezone: 'America/Toronto',
+    weeks: [[
+      buildMonthCell('2026-03-08'),
+      buildMonthCell('2026-03-09'),
+      buildMonthCell('2026-03-10'),
+      buildMonthCell('2026-03-11'),
+      buildMonthCell('2026-03-12'),
+      buildMonthCell('2026-03-13', { is_future: true, is_editable: false }),
+      buildMonthCell('2026-03-14', { is_future: true, is_editable: false }),
+    ]],
+  }))
+
+  await page.route('**/api/v1/calendar/days/*', (route) => jsonRoute(route, {
+    date: '2026-03-12',
+    today: '2026-03-12',
+    timezone: 'America/Toronto',
+    is_today: true,
+    is_future: false,
+    is_editable: true,
+    summary: buildMonthCell('2026-03-12'),
+    meals: [],
+    workouts: [],
+    weight_entries: [],
+    check_in: null,
+  }))
+
+  await page.route('**/api/v1/assistant/feed', (route) => jsonRoute(route, {
+    feed: {
+      generated_at: '2026-03-12T15:00:00.000Z',
+      source: 'deterministic',
+      freshness: {
+        timezone: 'America/Toronto',
+        local_date: '2026-03-12',
+        last_meal_at: null,
+        last_workout_at: null,
+        last_weight_at: null,
+        last_check_in_at: null,
+        meals_logged_today: false,
+        weight_logged_today: false,
+        check_in_completed_today: false,
+        workout_logged_last_72h: false,
+        stale_signals: [],
+      },
+      top_focus: {
+        title: 'Get the basics in',
+        summary: 'Start logging.',
+        route: '/nutrition',
+        cta_label: 'Open nutrition',
+      },
+      actions: [],
+      watchouts: [],
+      nudges: [],
+      quick_prompts: [],
+      stats: {},
+      brief: null,
+      today_check_in: null,
+    },
+  }))
+  await page.route('**/api/v1/foods**', (route) => jsonRoute(route, { items: [], total: 0, has_more: false, next_cursor: null }))
+  await page.route('**/api/v1/recipes', (route) => jsonRoute(route, { items: [], total: 0 }))
+  await page.route('**/api/v1/meal-templates', (route) => jsonRoute(route, { items: [], total: 0 }))
+  await page.route('**/api/v1/meals**', (route) => jsonRoute(route, { items: [], total: 0, has_more: false, next_cursor: null }))
+  await page.route('**/api/v1/meal-photos', (route) => jsonRoute(route, { items: [], total: 0 }))
+
+  await page.goto('/calendar/2026-03-12')
+  await expect(page.getByRole('heading', { name: 'Thursday, March 12, 2026' })).toBeVisible()
+
+  await page.locator('aside').getByRole('link', { name: 'Food' }).click()
+
+  await expect(page).toHaveURL(/\/nutrition$/)
+  await expect(page.getByRole('heading', { name: 'Quick food logging first' })).toBeVisible()
+})

@@ -116,12 +116,6 @@ export function CalendarPage() {
 
   useEffect(() => {
     if (!selectedDate) {
-      void navigate({ to: '/calendar/$date', params: { date: todayDateKey }, replace: true })
-    }
-  }, [navigate, selectedDate, todayDateKey])
-
-  useEffect(() => {
-    if (!selectedDate) {
       return
     }
     setEditingMealId(null)
